@@ -1,0 +1,23 @@
+{
+  "name": "erp-amico-v2-node",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "ERP AMICO v2: model AMICO Lite (ala Odoo / ERPNext) + fitur ERP AMICO. Node + PostgreSQL.",
+  "scripts": {
+    "start": "node server.js",
+    "db:migrate": "node scripts/migrate.js",
+    "user:add": "node scripts/user-add.js",
+    "import:amico": "node scripts/import-amico.js",
+    "import:jobreg": "node scripts/import-jobreg.js",
+    "demo:seed": "node scripts/demo-seed.js --data-dir=data/demo",
+    "demo": "node server.js --data-dir=data/demo --port=3201",
+    "test": "node test/run-all.js && node test/import.test.js && node test/jobreg.test.js"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.5.8",
+    "exceljs": "^4.4.0",
+    "express": "^4.22.3",
+    "pg": "^8.23.1"
+  }
+}
