@@ -7,11 +7,36 @@ import { findPrice } from "./master.js";
 const KINDS = ["TRUCKING", "CALO", "TOL", "PARKIR", "BONGKAR", "LAINNYA"];
 const HEADER_FIELDS = ["job_date", "customer_id", "vendor_id", "pol_id", "pod_id", "trip_type", "service_type", "delivery_scope",
   "rit_number", "truck_type", "vehicle_id", "plate_number", "driver1_name", "driver1_phone", "driver2_name", "driver2_phone",
-  "do_number", "payment_scheme", "selling_after_tax", "note"];
+  "do_number", "customer_scheme", "vendor_scheme", "selling_after_tax", "note"];
 const TRIP_FIELDS = ["gate_out_at", "gate_in_at", "sj_number", "sj_resi_received_at", "sj_received_at", "sj_resi_number",
   "sj_delivered_at", "sj_delivered_resi_number"];
 
 const productId = async (t, kind) => (await t.query("select id from product where kind = $1", [kind]))[0].id;
+
+// Rekening baru langsung dari form job (pemilik rekening boleh beda dengan vendor, mis. PT ABC -> rekening Fulan)
+async function newVendorBank(t, b, vendorId) {
+  if (!String(b.new_account_number || "").trim()) return;
+  if (!vendorId) fail("Pilih vendor dulu sebelum menambah rekening");
+  if (!String(b.new_bank_name || "").trim() || !String(b.new_holder || "").trim()) fail("Rekening baru: isi bank, nomor, dan atas nama");
+  const [r] = await t.query(
+    `insert into res_partner_bank (partner_id, bank_name, account_number, holder) values ($1, $2, $3, $4)
+     on conflict (partner_id, bank_name, account_number) do update set holder = excluded.holder, active = true returning id`,
+    [Number(vendorId), String(b.new_bank_name).trim().toUpperCase(), String(b.new_account_number).replace(/\s+/g, ""), String(b.new_holder).trim()]);
+  b.vendor_bank_id = r.id;
+}
+
+// Skema bayar default: dari setting partner, kalau kosong dalam kota 100% / antar kota 70/30. Vendor tidak ada 50/50.
+async function defaultSchemes(t, row) {
+  const pick1 = async (id) => (id ? (await t.query("select payment_scheme from res_partner where id = $1", [Number(id)]))[0]?.payment_scheme : null);
+  const scope = row.delivery_scope === "INNERCITY" ? "FULL" : "70_30";
+  if (!row.customer_scheme) row.customer_scheme = (await pick1(row.customer_id)) || scope;
+  if (!row.vendor_scheme) {
+    const v = await pick1(row.vendor_id);
+    row.vendor_scheme = v === "FULL" || v === "70_30" ? v : scope;
+  }
+  if (!["70_30", "50_50", "FULL"].includes(row.customer_scheme)) fail("Skema customer tidak dikenal");
+  if (!["70_30", "FULL"].includes(row.vendor_scheme)) fail("Skema vendor hanya 70/30 atau 100%");
+}
 
 // Selling & cost dari mode selling + price book
 async function resolveAmounts(t, b) {
@@ -48,6 +73,7 @@ export default function jobRoutes(db) {
       const p = `$${params.length}`;
       where.push(`(j.job_number ilike ${p} or j.plate_number ilike ${p} or j.do_number ilike ${p} or c.name ilike ${p} or j.driver1_name ilike ${p})`);
     }
+    if (req.query.stage) add("st.stage = ?", req.query.stage);
     if (req.query.state === "kurang_transfer") where.push("kt.job_id is not null");
     else if (req.query.state) add("j.state = ?", req.query.state);
     if (req.query.from) add("j.job_date >= ?", req.query.from);
@@ -59,8 +85,10 @@ export default function jobRoutes(db) {
     return db.query(
       `select j.*, c.name as customer, v.name as vendor, lp.code as pol, ld.code as pod,
               b.selling, b.cost, b.invoiced, b.received, b.requested, b.paid,
-              kt.vendor as kurang_transfer_vendor, kt.customer as kurang_bayar_customer
+              kt.vendor as kurang_transfer_vendor, kt.customer as kurang_bayar_customer,
+              st.stage, st.trip_status, st.sj_status, st.customer_status, st.vendor_status, st.sj_late, st.lead_time_sj
        from job j
+       join v_job_status st on st.job_id = j.id
        join res_partner c on c.id = j.customer_id
        left join res_partner v on v.id = j.vendor_id
        join location lp on lp.id = j.pol_id
@@ -85,7 +113,7 @@ export default function jobRoutes(db) {
     const [balance] = await db.query("select * from v_job_balance where job_id = $1", [id]);
     const moves = await db.query(
       `select m.id, m.number, m.move_type, m.phase, m.state, m.approval_state, m.payment_channel, m.move_date,
-              coalesce(pt.name, ml.payee_holder) as partner, ml.amount, ml.cancelled_at
+              coalesce(pt.name, ml.payee_holder) as partner, ml.amount, ml.cancelled_at, ml.job_line_id is null as tanpa_tujuan
        from account_move_line ml join account_move m on m.id = ml.move_id
        left join res_partner pt on pt.id = coalesce(m.partner_id, ml.payee_partner_id)
        where ml.job_id = $1 order by m.move_date, m.id`, [id]);
@@ -96,6 +124,13 @@ export default function jobRoutes(db) {
       ledger: await db.query("select * from v_cash_ledger where job_id = $1 order by tanggal, id", [id]),
       position: await db.query("select * from v_job_phase_position where job_id = $1 order by side desc, phase", [id]),
       kurang_transfer: await db.query("select * from v_kurang_transfer where job_id = $1 order by side desc", [id]),
+      status: (await db.query("select * from v_job_status where job_id = $1", [id]))[0],
+      reroutes: await db.query(
+        `select a.at, a.detail, u.display_name as by_name from audit_log a left join app_user u on u.id = a.user_id
+         where a.entity = 'job' and a.entity_id = $1 and a.action = 'reroute' order by a.id`, [id]),
+      sj_deliveries: await db.query(
+        `select d.* from sj_delivery d join sj_delivery_line l on l.delivery_id = d.id where l.job_id = $1 order by d.id`, [id]),
+      unassigned: await db.query("select * from v_unassigned where job_id = $1 order by move_date, move_line_id", [id]),
       trip_updates: await db.query(
         `select tu.*, u.display_name as by_name from trip_update tu left join app_user u on u.id = tu.created_by
          where tu.job_id = $1 order by tu.at desc`, [id]),
@@ -114,7 +149,8 @@ export default function jobRoutes(db) {
     const row = pick(b, HEADER_FIELDS);
     row.job_number = b.job_number ? String(b.job_number).trim() : await nextNumber(t, `JOB/${yymm}`, `AMC/${yymm}/`);
     row.selling_mode = mode;
-    if (!row.payment_scheme) row.payment_scheme = row.delivery_scope === "INNERCITY" ? "FULL" : "70_30";
+    await defaultSchemes(t, row);
+    await newVendorBank(t, b, b.vendor_id);
     if (row.plate_number) row.plate_number = String(row.plate_number).trim().toUpperCase();
     row.created_by = req.user.id;
     const id = await insertRow(t, "job", row);
@@ -135,6 +171,7 @@ export default function jobRoutes(db) {
     if (!job) fail("Job tidak ditemukan", 404);
     if (job.state === "cancelled") fail("Job sudah dibatalkan");
     const merged = { ...job, ...b, selling_mode: b.selling_mode || job.selling_mode };
+    await newVendorBank(t, b, merged.vendor_id);
     const row = pick(b, HEADER_FIELDS);
     if (row.plate_number) row.plate_number = String(row.plate_number).trim().toUpperCase();
 
@@ -142,20 +179,37 @@ export default function jobRoutes(db) {
       "select s.* from v_job_line_status s where s.job_id = $1 and s.kind = 'TRUCKING' order by s.job_line_id", [id]);
     const sale = main.find((x) => x.side === "SALE");
     const purchase = main.find((x) => x.side === "PURCHASE");
-    const hasDocs = main.some((x) => x.billed > 0);
-    if (hasDocs && row.payment_scheme && row.payment_scheme !== job.payment_scheme) fail("Skema bayar tidak bisa diganti karena sudah ada invoice/pengajuan");
+    if (sale?.billed > 0 && row.customer_scheme && row.customer_scheme !== job.customer_scheme) fail("Skema customer tidak bisa diganti karena sudah ditagih");
+    if (purchase?.billed > 0 && row.vendor_scheme && row.vendor_scheme !== job.vendor_scheme) fail("Skema vendor tidak bisa diganti karena sudah diajukan");
+    if (row.customer_scheme && !["70_30", "50_50", "FULL"].includes(row.customer_scheme)) fail("Skema customer tidak dikenal");
+    if (row.vendor_scheme && !["70_30", "FULL"].includes(row.vendor_scheme)) fail("Skema vendor hanya 70/30 atau 100%");
     if (sale?.billed > 0 && row.customer_id && Number(row.customer_id) !== job.customer_id) fail("Customer tidak bisa diganti karena sudah ditagih");
 
     // Hitung ulang harga hanya kalau rute / truk / customer / mode selling / nominal memang berubah,
     // supaya perubahan price book tidak diam-diam mengubah job lama.
     const changed = (k) => k in b && String(b[k] ?? "").toUpperCase() !== String(job[k] ?? "").toUpperCase();
+    // Ganti rute / truk setelah ada pengajuan / invoice = reroute: wajib alasan, dicatat sebelum -> sesudah
+    const routeChanged = ["pol_id", "pod_id", "trip_type", "truck_type"].some(changed);
+    const [docs] = await t.query(
+      `select count(*)::int as n from account_move_line ml join account_move m on m.id = ml.move_id
+       where ml.job_id = $1 and m.state = 'posted' and ml.cancelled_at is null`, [id]);
+    if (routeChanged && docs.n > 0 && !String(b.reason || "").trim()) {
+      fail("Job ini sudah punya pengajuan / invoice. Isi alasan ganti rute (mis. reroute permintaan gudang).");
+    }
+    const routeName = async (pol, pod, trip) => {
+      const [x] = await t.query("select (select code from location where id = $1) || ' - ' || (select code from location where id = $2) as r", [pol, pod]);
+      return `${x.r}${trip === "ROUND_TRIP" ? " PP" : ""}`;
+    };
+    const before = routeChanged ? { rute: await routeName(job.pol_id, job.pod_id, job.trip_type), truk: job.truck_type, selling: sale?.amount ?? 0, cost: purchase?.amount ?? 0 } : null;
     const mode = b.selling_mode || job.selling_mode;
     const pricingChanged = ["pol_id", "pod_id", "truck_type", "trip_type", "customer_id", "selling_mode"].some(changed)
       || (mode === "CUSTOM" && "selling" in b && b.selling !== "" && money(b.selling) !== sale?.amount)
       || ("cost" in b && b.cost !== "" && b.cost != null && money(b.cost) !== purchase?.amount);
     if (pricingChanged) {
+      // ganti rute tanpa isi cost = cost dari price book rute baru; selain itu cost lama / yang diisi
+      const keepCost = "cost" in b ? b.cost : routeChanged ? "" : purchase?.amount;
       const { mode, selling, cost } = await resolveAmounts(t, {
-        ...merged, cost: "cost" in b ? b.cost : purchase?.amount, selling: "selling" in b ? b.selling : sale?.amount });
+        ...merged, cost: keepCost, selling: "selling" in b ? b.selling : sale?.amount });
       row.selling_mode = mode;
       if (sale) {
         if (selling < sale.billed) fail(`Selling ${rupiah(selling)} lebih kecil dari yang sudah ditagih (${rupiah(sale.billed)})`);
@@ -172,7 +226,18 @@ export default function jobRoutes(db) {
     }
     row.updated_at = new Date().toISOString();
     await updateRow(t, "job", id, row);
-    await audit(t, req, "job", id, pricingChanged ? "update_pricing" : "update", b);
+    if (routeChanged) {
+      const [now] = await t.query(
+        `select (select amount from job_line where id = $1) as selling, (select amount from job_line where id = $2) as cost`,
+        [sale?.job_line_id ?? 0, purchase?.job_line_id ?? 0]);
+      await audit(t, req, "job", id, "reroute", {
+        dari: before.rute, ke: await routeName(merged.pol_id, merged.pod_id, merged.trip_type), truk_dari: before.truk, truk_ke: merged.truck_type,
+        selling_dari: before.selling, selling_ke: now.selling ?? 0, cost_dari: before.cost, cost_ke: now.cost ?? 0,
+        alasan: String(b.reason || "").trim() || null, sudah_ada_dokumen: docs.n > 0,
+      });
+    } else {
+      await audit(t, req, "job", id, pricingChanged ? "update_pricing" : "update", b);
+    }
     return { ok: true };
   })));
 

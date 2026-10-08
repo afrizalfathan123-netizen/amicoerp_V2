@@ -128,7 +128,7 @@ try {
 
   await step("J2: job FULL", async () => {
     const b = await up("AMC/2609/0100");
-    assert.deepEqual([b.payment_scheme, b.utang_100_terbayar, b.piutang_100_terbayar], ["FULL", 450000, 550000]);
+    assert.deepEqual([b.customer_scheme, b.utang_100_terbayar, b.piutang_100_terbayar], ["FULL", 450000, 550000]);
   });
 
   await step("J3: transfer malam disalurkan lalu refund -> pembalik + dana kembali, job bebas diajukan lagi", async () => {

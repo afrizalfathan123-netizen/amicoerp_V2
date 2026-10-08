@@ -48,6 +48,25 @@ importer), dan KURANG TRANSFER. Aturan ada di kepala `lib/import-jobreg.js`. Yan
 - Sudah dibayar menurut UTANG PIUTANG; job yang tidak ada di sana dianggap dibayar pada tanggal kolom DATE.
 - Calo / kelebihan pengajuan vendor masuk dokumen fase "Calo / biaya lain"; kelebihan di atas cost / selling jadi baris SELISIH.
 
+## Status job & surat jalan
+
+- Status job dihitung otomatis (seperti ERPNext): Rencana (belum gate out) -> Dalam perjalanan -> Menunggu SJ -> Siap ditagih ->
+  SJ belum dikirim -> Menunggu pembayaran -> Selesai. Job rencana hanya boleh diajukan untuk operasional (DP / calo vendor);
+  invoice customer dan pelunasan / full vendor wajib kode tugas + jam gate out (bisa dimatikan di Master Data > Perusahaan).
+- Menu Surat Jalan: pemantauan lead time (gate in -> resi driver -> SJ diterima -> dikirim ke customer) dengan target hari,
+  input cepat (tempel daftar no job / no SJ / kode tugas), dan Pengiriman SJ ke customer (satu resi untuk banyak SJ, nomor SJD,
+  bisa dicetak). Customer tanpa SJ fisik lewat kurir: matikan "Lacak SJ" di partner.
+- Export Job List (Excel + ringkasan) di halaman Job. Teks WhatsApp pengajuan: tombol "Salin teks WhatsApp" di pengajuan vendor.
+
+## Impor Job List ERP AMICO v1
+
+```bash
+npm run import:joblist-v1 -- "C:\path\job-list-semua.xlsx" --pratinjau
+```
+Atau tombol "Impor Job List v1" di halaman Job (ADMIN, server tidak perlu dimatikan). Melengkapi job yang ada (driver, HP, gate,
+SJ, resi, vendor + rekening) dan menambah job yang belum ada (selling / cost 0). Kolom yang beda tidak ditimpa kecuali `--timpa`.
+Uang tidak disentuh. Isian buatan v1 (DRIVER DUMMY, HP 08000000.., resi AUTO-SJ..) diabaikan.
+
 ## Role
 
 | Role | Boleh |
@@ -78,7 +97,12 @@ JOB REGISTRATION), kurang transfer, jurnal kas, umur tagihan, titipan kas operas
 ## Aturan yang dijaga server
 
 - Nominal invoice / pengajuan tidak boleh melebihi sisa baris order; pengajuan berulang boleh, tidak ada angka yang ditimpa.
-- DP 70% sekali per job per sisi. DP / pelunasan untuk job skema 70/30, FULL untuk job skema 100%.
+- Skema bayar per sisi: customer 70/30, 50/50, atau 100%; vendor 70/30 atau 100%. Default dari setting partner (Master Data),
+  kalau kosong dalam kota 100% / antar kota 70/30. Skema sisi yang sudah ditagih / diajukan terkunci.
+- DP sekali per job per sisi (70% atau 50% sesuai skema). DP / pelunasan untuk sisi berskema 70/30 atau 50/50, FULL untuk 100%.
+- Selisih tanpa tujuan: nominal dokumen yang melebihi selling / cost (dari impor) dicatat tanpa baris order, jadi selling / cost
+  job tetap sesuai sumbernya. Finance mengarahkannya di menu Selisih Tanpa Tujuan: ke baris order job (calo, biaya / selling
+  tambahan), jadi saldo partner (kalau sudah dibayar), atau dibatalkan (kalau belum dibayar).
 - Calo / biaya lain diajukan dengan fase "Calo / biaya lain"; di laporan finance ikut kolom 30% (atau 100%).
 - Selling / cost tidak bisa diturunkan di bawah yang sudah ditagih / diajukan; top-up wajib alasan.
 - Pengajuan vendor perlu persetujuan ADMIN sebelum dibayar (bisa dimatikan di pengaturan).
@@ -90,5 +114,5 @@ JOB REGISTRATION), kurang transfer, jurnal kas, umur tagihan, titipan kas operas
 ```bash
 npm test
 ```
-Alur lengkap lewat HTTP per role (18 langkah) + pindah data dari tiruan database AMICO lama (12 langkah)
-+ impor JOB REGISTRATION dari workbook tiruan (13 langkah).
+Alur lengkap lewat HTTP per role (20 langkah) + pindah data dari tiruan database AMICO lama (12 langkah)
++ impor JOB REGISTRATION dari workbook tiruan (14 langkah).

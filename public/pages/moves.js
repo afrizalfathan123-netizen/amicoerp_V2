@@ -58,7 +58,7 @@ async function renderMoves(type) {
 
 function moveForm(type) {
   const isInv = type === "out_invoice";
-  const phases = isInv ? { DP_70: PHASE_LABEL.DP_70, SETTLEMENT_30: PHASE_LABEL.SETTLEMENT_30, FULL: PHASE_LABEL.FULL } : PHASE_LABEL;
+  const phases = isInv ? { DP: PHASE_LABEL.DP, SETTLEMENT: PHASE_LABEL.SETTLEMENT, FULL: PHASE_LABEL.FULL } : PHASE_LABEL;
   const defBank = banks("BANK").find((b) => b.is_default)?.id;
   openModal({
     title: isInv ? "Invoice customer baru" : "Pengajuan vendor baru",
@@ -69,12 +69,13 @@ function moveForm(type) {
       <div class="form-grid">
         ${isInv ? `<label>Customer<select name="partner_id" required>${options(customers(), "", undefined, "- pilih -")}</select></label>`
                 : `<label>Vendor (filter)<select name="partner_id">${options(vendors(), "", undefined, "Semua vendor")}</select></label>`}
-        <label>Fase<select name="phase">${enumOptions(phases, "DP_70")}</select></label>
+        <label>Fase<select name="phase">${enumOptions(phases, "DP")}</select></label>
         <label>Tanggal<input type="date" name="move_date" value="${today()}"></label>
         ${isInv ? `<label>Jatuh tempo<input type="date" name="due_date"></label>
           <label>Rekening tujuan<select name="bank_account_id">${options(banks("BANK"), defBank, bankLabel, null)}</select></label>`
                 : `<label>Saluran<select name="payment_channel">${enumOptions({ NORMAL: "Normal (transfer dari rekening bank)", TRANSFER_MALAM: "Transfer malam (lewat kas operasional)" }, "NORMAL")}</select></label>`}
         <label>Cari job / plat<input name="search"></label>
+        ${isInv ? `<label class="check"><input type="checkbox" name="sj_received" checked> Hanya job yang SJ-nya sudah diterima</label>` : ""}
         <label class="wide">Catatan<input name="note"></label>
       </div>
       <div class="table-wrap" id="eligible" style="margin-top:12px"><p class="empty">${isInv ? "Pilih customer dulu." : "Memuat..."}</p></div>`,
@@ -83,7 +84,8 @@ function moveForm(type) {
       const load = async () => {
         const box = form.querySelector("#eligible");
         if (isInv && !E.partner_id.value) return;
-        const rows = await get(`/moves/eligible?${new URLSearchParams({ move_type: type, phase: E.phase.value, partner_id: E.partner_id.value, search: E.search.value })}`);
+        const rows = await get(`/moves/eligible?${new URLSearchParams({ move_type: type, phase: E.phase.value, partner_id: E.partner_id.value, search: E.search.value,
+          sj_received: isInv && E.sj_received.checked && E.phase.value !== "DP" ? "1" : "" })}`);
         // hanya yang masih bisa ditagih / diajukan di fase ini (mis. DP yang sudah diajukan tidak muncul lagi)
         const items = rows.filter((r) => r.suggested > 0);
         box.innerHTML = items.length ? `<table>
@@ -92,7 +94,7 @@ function moveForm(type) {
             <th class="num">Sudah</th><th class="num">Sisa</th><th class="num">${isInv ? "Tagih sekarang" : "Ajukan sekarang"}</th></tr></thead>
           <tbody>${items.map((r, i) => `<tr>
             <td><input type="checkbox" data-i="${i}"></td>
-            <td><b>${esc(r.job_number)}</b>${r.in_draft > 0 ? `<br><span class="muted">${rp(r.in_draft)} ada di draft lain</span>` : ""}</td>
+            <td><b>${esc(r.job_number)}</b>${r.scheme === "50_50" ? ` <span class="badge">50/50</span>` : ""}${r.in_draft > 0 ? `<br><span class="muted">${rp(r.in_draft)} ada di draft lain</span>` : ""}</td>
             <td>${tgl(r.job_date)}</td><td>${esc(r.route)}<br><span class="muted">${esc(r.plate_number || "")}</span></td>
             ${isInv ? `<td class="num">${rp(r.line_amount)}</td><td class="num">${rp(r.selling_net)}</td>`
                     : `<td>${esc(KIND_LABEL[r.kind])}</td><td>${esc(r.partner || "-")}${r.bank_name ? `<br><span class="muted">${esc(r.bank_name)} ${esc(r.account_number)}</span>` : `<br><span class="warn-text">rekening belum diisi</span>`}</td><td class="num">${rp(r.line_amount)}</td>`}
@@ -151,6 +153,7 @@ export async function renderMoveDetail(id) {
         ${canFinance() && payable && (!night || m.titipan > 0) ? `<button class="primary" id="pay">${isInv ? "Catat pembayaran masuk" : night ? "Catat penyaluran ke vendor" : "Catat transfer"}</button>` : ""}
         ${canFinance() && m.state === "posted" ? `<button class="danger" id="cancelMove">Batalkan</button>` : ""}
         ${m.state !== "draft" ? `<a class="btn" href="#/moves/${m.id}/cetak">Cetak</a>` : ""}
+        ${!isInv ? `<button id="waText" title="Format pengajuan untuk grup WhatsApp">Salin teks WhatsApp</button>` : ""}
       </div>
     </div>
     ${m.state === "posted" && m.approval_state === "PENDING" ? `<div class="note-box warn-box">Menunggu persetujuan ADMIN sebelum bisa dibayar.</div>` : ""}
@@ -172,7 +175,7 @@ export async function renderMoveDetail(id) {
         <th class="num">Nominal</th><th class="num">Dibayar</th><th></th>`,
         m.lines.map((l, i) => `<tr class="${l.cancelled_at ? "rev" : ""}">
           <td>${i + 1}</td><td><a href="#/jobs/${l.job_id}">${esc(l.job_number)}</a></td><td>${tgl(l.job_date)}</td><td>${esc(l.route)}</td>
-          <td>${esc(l.plate_number || "")}</td><td>${esc(l.do_number || "")}</td><td>${esc(KIND_LABEL[l.kind])}</td>
+          <td>${esc(l.plate_number || "")}</td><td>${esc(l.do_number || "")}</td><td>${l.job_line_id ? esc(KIND_LABEL[l.kind]) : `<a href="#/unassigned" class="badge warn">Tanpa tujuan</a>`}${m.phase === "DP" && l.dp_prev > 0 ? `<br><span class="badge draft" title="DP sebelumnya ${rp(l.dp_prev)}${l.reroute ? `, reroute ${esc(l.reroute.dari)} → ${esc(l.reroute.ke)}` : ""}">DP tambahan</span>` : ""}</td>
           ${isInv ? "" : `<td>${esc(l.payee_name || l.payee_holder || "-")}${l.payee_bank_name ? `<br><span class="muted">${esc(l.payee_bank_name)} ${esc(l.payee_account_number)} a.n. ${esc(l.payee_holder)}</span>` : ""}</td>`}
           <td class="num">${l.cancelled_at ? `<s>${rp(l.amount)}</s><br><span class="muted">batal: ${esc(l.cancel_reason || "")}</span>` : rp(l.amount)}</td>
           <td class="num">${rp(l.paid)}</td>
@@ -193,6 +196,11 @@ export async function renderMoveDetail(id) {
         </tr>`).join(""), "Belum ada pembayaran")}
     </div>`;
   const on = (sel, fn) => document.getElementById(sel)?.addEventListener("click", fn);
+  on("waText", async () => {
+    const text = waText(m);
+    try { await navigator.clipboard.writeText(text); toast("Teks WhatsApp disalin"); }
+    catch { openModal({ title: "Teks WhatsApp", body: `<textarea rows="18" style="width:100%">${esc(text)}</textarea>` }); }
+  });
   on("postMove", action(() => api("POST", `/moves/${id}/post`), "Diposting"));
   on("delMove", async () => {
     try { await api("POST", `/moves/${id}/cancel`, {}); toast("Draft dihapus"); location.hash = isInv ? "#/invoices" : "#/requests"; } catch (e) { toast(e.message, true); }
@@ -296,12 +304,52 @@ export async function renderMovePrint(id) {
           <td class="num">${rp(l.amount)}</td></tr>`).join("")}</tbody>
       </table>
       ${isInv ? `<table class="print-sum">
-        ${m.phase !== "DP_70" ? `<tr><td>Total selling</td><td class="num">${rp(selling)}</td></tr>
+        ${m.phase !== "DP" ? `<tr><td>Total selling</td><td class="num">${rp(selling)}</td></tr>
           ${m.ppn_amount ? `<tr><td>PPN</td><td class="num">${rp(m.ppn_amount)}</td></tr>` : ""}
           ${m.pph23_amount ? `<tr><td>PPh 23 (dipotong customer)</td><td class="num">-${rp(m.pph23_amount)}</td></tr>` : ""}
-          ${m.phase === "SETTLEMENT_30" ? `<tr><td>Dikurangi DP yang sudah ditagih</td><td class="num">-${rp(selling + m.ppn_amount - m.pph23_amount - m.amount_total)}</td></tr>` : ""}` : ""}
+          ${m.phase === "SETTLEMENT" ? `<tr><td>Dikurangi DP yang sudah ditagih</td><td class="num">-${rp(selling + m.ppn_amount - m.pph23_amount - m.amount_total)}</td></tr>` : ""}` : ""}
         <tr class="total"><td>Jumlah yang harus dibayar</td><td class="num">${rp(m.amount_total)}</td></tr></table>
         ${m.bank_account ? `<div class="print-bank">Pembayaran ke: <b>${esc(m.company_bank)} ${esc(m.company_account_number)}</b> a.n. ${esc(m.company_holder)}</div>` : ""}`
       : `<table class="print-sum"><tr class="total"><td>Total</td><td class="num">${rp(m.amount_total)}</td></tr></table>`}
     </div>`;
+}
+
+// Teks pengajuan untuk grup WhatsApp (format yang dipakai tim selama ini), dikelompokkan per customer & job
+function waText(m) {
+  const n = (v) => Number(v || 0).toLocaleString("id-ID");
+  const night = m.payment_channel === "TRANSFER_MALAM";
+  const lines = m.lines.filter((l) => !l.cancelled_at);
+  const pct = (l) => (m.phase === "DP" ? (l.vendor_scheme === "FULL" ? 100 : 70) : m.phase === "SETTLEMENT" ? 30 : 100);
+  const extra = m.phase === "DP" && lines.some((l) => l.dp_prev > 0);
+  const title = { DP: `${extra ? "DP TAMBAHAN" : "DP"} ${pct(lines[0] || {})}%`, SETTLEMENT: "PELUNASAN 30%", FULL: "FULL 100%", OTHER: "CALO / BIAYA LAIN" }[m.phase];
+  const dt = new Date(m.posted_at || m.created_at).toLocaleString("id-ID", { timeZone: "Asia/Jakarta", dateStyle: "short", timeStyle: "short" });
+  const out = [`BATCH PENGAJUAN ${title}`, `Batch : ${m.number || "(draft)"}`, `Jalur : ${night ? "Transfer malam" : "Normal"}`,
+    `Total Job : ${new Set(lines.map((l) => l.job_id)).size}`, `Total ${title} : Rp ${n(m.amount_total)}`, `Dibuat : ${dt}`, "=".repeat(47), ""];
+  const byCust = new Map();
+  for (const l of lines) {
+    if (!byCust.has(l.customer)) byCust.set(l.customer, new Map());
+    const jobs = byCust.get(l.customer);
+    if (!jobs.has(l.job_id)) jobs.set(l.job_id, []);
+    jobs.get(l.job_id).push(l);
+  }
+  let no = 0;
+  for (const [cust, jobs] of byCust) {
+    for (const [, ls] of jobs) {
+      const j = ls[0];
+      out.push(`${++no}. PENGAJUAN ${title}`, "", cust, "", j.job_number,
+        `Rute     : ${j.pol} ${j.pod}`, `Unit     : ${j.truck_type || "-"}`, `Nopol    : ${j.plate_number || "-"}`);
+      if (j.driver1_name) out.push(`Nama     : ${j.driver1_name}`, `Hp       : ${j.driver1_phone || "-"}`);
+      if (j.driver2_name) out.push(`Nama     : ${j.driver2_name}`, `Hp       : ${j.driver2_phone || "-"}`);
+      out.push(`Kode Tugas : ${j.do_number || "-"}`, "");
+      if (j.reroute && j.dp_prev > 0) out.push(`Reroute  : ${j.reroute.dari} -> ${j.reroute.ke}`, `Alasan   : ${j.reroute.alasan || "-"}`, "");
+      for (const l of ls) {
+        const what = l.job_line_id ? (l.kind === "TRUCKING" ? "trucking" : (l.kind || "").toLowerCase()) : "selisih";
+        if (l.kind === "TRUCKING") out.push(`Harga trucking : ${n(l.line_amount)}`);
+        if (m.phase === "DP" && l.dp_prev > 0) out.push(`DP sebelumnya : ${n(l.dp_prev)}`);
+        out.push(`${title.toLowerCase().replace(/^dp/, "DP").replace(/^./, (c) => c.toUpperCase())} ${what} : ${n(l.amount)}`, "",
+          `Rekening ${what}:`, l.payee_holder || l.payee_name || "-", l.payee_bank_name || "-", l.payee_account_number || "-", "");
+      }
+    }
+  }
+  return out.join("\n").trim();
 }

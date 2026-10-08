@@ -1,5 +1,5 @@
 // Laporan: Rekap Posisi, Jurnal Kas, Utang Piutang, Kas & Rekening.
-import {
+import { signed,
   state, api, get, view, esc, rp, tgl, tile, options, enumOptions, table, toast, openModal, customers, bankLabel, num, today,
   debounce, bindRows, canFinance, PHASE_LABEL,
 } from "../lib.js";
@@ -25,12 +25,12 @@ export function ledgerTable(rows, withJob = true) {
 export function shortPanel(rows) {
   if (!rows?.length) return "";
   return `<div class="panel warn-panel"><h2>Kurang transfer <span class="hint">pelunasan sudah dibayar, tapi totalnya kurang dari seharusnya</span></h2>
-    ${table(`<th>Arah</th><th class="num">Seharusnya</th><th class="num">DP seharusnya (70%)</th><th class="num">DP dibayar</th><th class="num">Pelunasan dibayar</th>
-      <th class="num">DP kurang</th><th class="num">Pelunasan kurang</th><th class="num">Total kurang</th>`,
+    ${table(`<th>Arah</th><th class="num">Seharusnya</th><th class="num">DP seharusnya</th><th class="num">DP dibayar</th><th class="num">Pelunasan dibayar</th>
+      <th class="num">DP kurang</th><th class="num">Pelunasan kurang</th><th class="num">Total kurang</th><th class="num">Ke kas AMICO</th>`,
       rows.map((r) => `<tr><td>${r.side === "PURCHASE" ? "AMICO kurang transfer ke vendor" : "Customer kurang bayar ke AMICO"}</td>
         <td class="num">${rp(r.seharusnya)}</td><td class="num">${rp(r.dp_seharusnya)}</td><td class="num">${rp(r.dp_dibayar)}</td>
         <td class="num">${rp(r.pelunasan_dibayar)}</td><td class="num">${rp(r.dp_kurang)}</td><td class="num">${rp(r.pelunasan_kurang)}</td>
-        <td class="num"><b>${rp(r.kurang)}</b></td></tr>`).join(""))}</div>`;
+        <td class="num"><b>${rp(r.kurang)}</b></td><td class="num">${signed(r.selisih_kas)}</td></tr>`).join(""))}</div>`;
 }
 
 // ---------------------------------------------------------------- rekap posisi
@@ -45,12 +45,12 @@ export async function renderRekap() {
         <label>Tgl job dari<input type="date" id="rFrom" value="${esc(f.from || "")}"></label>
         <label>Sampai<input type="date" id="rTo" value="${esc(f.to || "")}"></label>
         <label>Customer<select id="rCust">${options(customers(), f.customer_id, undefined, "Semua customer")}</select></label>
-        <label>Skema<select id="rScheme"><option value="">Semua</option>${enumOptions({ "70_30": "70 / 30", FULL: "Full 100%" }, f.scheme)}</select></label>
+        <label>Skema<select id="rScheme"><option value="">Semua</option>${enumOptions({ "70_30": "70 / 30", "50_50": "50 / 50", FULL: "Full 100%" }, f.scheme)}</select></label>
       </div>
       <div id="rekapTiles"></div>
     </div>
     <div id="rekapBox"></div>
-    <div class="panel"><h2>Kurang transfer <span class="hint">job 70/30 yang pelunasannya sudah dibayar tapi totalnya kurang</span>
+    <div class="panel"><h2>Kurang transfer <span class="hint">job DP + pelunasan (70/30, 50/50) yang pelunasannya sudah dibayar tapi totalnya kurang</span>
       <div class="spacer"></div><a class="btn" href="/api/export/kurang-transfer.xlsx">Export Excel</a></h2><div id="shortBox"></div></div>
     <div class="panel"><h2>Umur tagihan <span class="hint">dokumen yang sudah diajukan / ditagih tapi belum dibayar</span></h2><div id="agingBox"></div></div>`;
   const el = (id) => document.getElementById(id);
@@ -85,10 +85,10 @@ export async function renderRekap() {
   const loadAside = async () => {
     const [short, pay, rec] = await Promise.all([get("/kurang-transfer"), get("/aging?move_type=in_invoice"), get("/aging?move_type=out_invoice")]);
     const sTable = (title, list) => `<h3 class="sub-h">${esc(title)} (${list.length} job, total ${rp(list.reduce((s, r) => s + r.kurang, 0))})</h3>${table(
-      `<th>Job</th><th>Tgl</th><th>Customer</th><th class="num">Seharusnya</th><th class="num">DP dibayar</th><th class="num">Pelunasan dibayar</th><th class="num">DP kurang</th><th class="num">Pelunasan kurang</th><th class="num">Total kurang</th>`,
+      `<th>Job</th><th>Tgl</th><th>Customer</th><th class="num">Seharusnya</th><th class="num">DP dibayar</th><th class="num">Pelunasan dibayar</th><th class="num">DP kurang</th><th class="num">Pelunasan kurang</th><th class="num">Total kurang</th><th class="num">Ke kas AMICO</th>`,
       list.map((r) => `<tr><td><a href="#/jobs/${r.job_id}">${esc(r.job_number)}</a></td><td>${tgl(r.job_date)}</td><td>${esc(r.customer)}</td>
         <td class="num">${rp(r.seharusnya)}</td><td class="num">${rp(r.dp_dibayar)}</td><td class="num">${rp(r.pelunasan_dibayar)}</td>
-        <td class="num">${rp(r.dp_kurang)}</td><td class="num">${rp(r.pelunasan_kurang)}</td><td class="num"><b>${rp(r.kurang)}</b></td></tr>`).join(""), "Tidak ada")}`;
+        <td class="num">${rp(r.dp_kurang)}</td><td class="num">${rp(r.pelunasan_kurang)}</td><td class="num"><b>${rp(r.kurang)}</b></td><td class="num">${signed(r.selisih_kas)}</td></tr>`).join(""), "Tidak ada")}`;
     el("shortBox").innerHTML = sTable("AMICO kurang transfer ke vendor", short.filter((r) => r.side === "PURCHASE")) +
       sTable("Customer kurang bayar ke AMICO", short.filter((r) => r.side === "SALE"));
     const aTable = (title, list) => `<h3 class="sub-h">${esc(title)}</h3>${table(
@@ -147,8 +147,8 @@ const UP_COLS = [
   ["UTANG 100%", "utang_100"], ["UTANG 100% TERBAYAR", "utang_100_terbayar"], ["UTANG 70%", "utang_70"], ["UTANG 70% TERBAYAR", "utang_70_terbayar"],
   ["UTANG 30% BELUM BAYAR", "utang_30_belum_bayar"], ["UTANG 30% TERBAYAR", "utang_30_terbayar"],
   ["PIUTANG 100% BELUM TERBAYAR", "piutang_100_belum_terbayar"], ["PIUTANG 100% TERBAYAR", "piutang_100_terbayar"],
-  ["PIUTANG 70% BELUM TERTAGIH", "piutang_70_belum_tertagih"], ["PIUTANG 70% TERTAGIH", "piutang_70_tertagih"], ["PIUTANG 70% TERBAYAR", "piutang_70_terbayar"],
-  ["PIUTANG 30% BELUM TERTAGIH", "piutang_30_belum_tertagih"], ["PIUTANG 30% TERTAGIH", "piutang_30_tertagih"], ["PIUTANG 30% TERBAYAR", "piutang_30_terbayar"],
+  ["PIUTANG DP BELUM TERTAGIH", "piutang_70_belum_tertagih"], ["PIUTANG DP TERTAGIH", "piutang_70_tertagih"], ["PIUTANG DP TERBAYAR", "piutang_70_terbayar"],
+  ["PIUTANG PELUNASAN BELUM TERTAGIH", "piutang_30_belum_tertagih"], ["PIUTANG PELUNASAN TERTAGIH", "piutang_30_tertagih"], ["PIUTANG PELUNASAN TERBAYAR", "piutang_30_terbayar"],
   ["CALO / LAIN TERBAYAR", "calo_lain_terbayar"], ["CALO / LAIN BELUM BAYAR", "calo_lain_belum_bayar"],
   ["KURANG TRANSFER KE VENDOR", "kurang_transfer_vendor"], ["KURANG BAYAR DARI CUSTOMER", "kurang_bayar_customer"],
 ];

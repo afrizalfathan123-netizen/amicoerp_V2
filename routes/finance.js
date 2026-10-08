@@ -3,42 +3,52 @@
 //
 // Aturan (dicek di dalam transaksi):
 //   - Nominal tidak boleh melebihi sisa baris order; pengajuan berulang boleh tapi tidak lewat rencana.
-//   - DP 70% sekali per job per sisi. DP / pelunasan hanya job skema 70/30; FULL hanya job skema 100%.
+//   - DP boleh lebih dari satu dokumen (mis. DP tambahan setelah reroute), asal total DP tidak melebihi 70% / 50% dari
+//     selling / cost TERBARU. DP / pelunasan hanya untuk sisi berskema 70/30 atau 50/50 (customer: job.customer_scheme,
+//     vendor: job.vendor_scheme); FULL hanya untuk sisi berskema 100%.
 //   - Fase OTHER hanya untuk biaya vendor selain trucking (calo, tol, parkir, bongkar, lainnya).
 //   - Pengajuan vendor harus disetujui ADMIN sebelum dibayar (kalau setting vendor_approval_required).
 //   - Dokumen / baris yang sudah ada pembayaran tidak bisa dibatalkan sebelum pembayarannya dibalik.
+//   - Selisih tanpa tujuan (baris dokumen tanpa baris order, mis. dari impor): diarahkan ke baris order job,
+//     dijadikan saldo partner (kalau sudah dibayar), atau dibatalkan (kalau belum dibayar).
 //   - Transfer malam: dibayar ke vendor dari kas OPERATIONAL, maksimal sebesar dana yang sudah dikirim ke sana.
 import express from "express";
 import { requireRole, assertRole, ROLES } from "../lib/auth.js";
 import { route, fail, money, rupiah, today, insertRow, nextNumber, audit, setting } from "../lib/util.js";
+import { compareJobReg, saveJobRegSnapshot } from "../lib/import-jobreg.js";
 
-const PHASES = ["DP_70", "SETTLEMENT_30", "FULL", "OTHER"];
+const PHASES = ["DP", "SETTLEMENT", "FULL", "OTHER"];
+const KINDS = ["TRUCKING", "CALO", "TOL", "PARKIR", "BONGKAR", "LAINNYA"];
+export const DP_PCT = { "70_30": 0.7, "50_50": 0.5 };
 
 // ---------------------------------------------------------------- calon baris dokumen
 // Customer: per job (nominal dibagi ke semua baris selling job itu). Vendor: per baris order.
-export async function eligible(t, { move_type, phase, partner_id, job_ids, exclude_move_id = 0, search }) {
+export async function eligible(t, { move_type, phase, partner_id, job_ids, exclude_move_id = 0, search, sj_received }) {
   if (!PHASES.includes(phase)) fail("Fase tidak dikenal");
   const sale = move_type === "out_invoice";
   if (sale && phase === "OTHER") fail("Invoice customer tidak memakai fase OTHER");
-  const scheme = phase === "FULL" ? "FULL" : phase === "OTHER" ? null : "70_30";
+  const schemeCol = sale ? "j.customer_scheme" : "j.vendor_scheme";
   const params = [exclude_move_id || 0];
   const where = ["j.state <> 'cancelled'", `jl.side = '${sale ? "SALE" : "PURCHASE"}'`];
   if (!sale) where.push(phase === "OTHER" ? "p.kind <> 'TRUCKING'" : "p.kind = 'TRUCKING'");
-  if (scheme) where.push(`j.payment_scheme = '${scheme}'`);
+  if (phase === "FULL") where.push(`${schemeCol} = 'FULL'`);
+  else if (phase !== "OTHER") where.push(`${schemeCol} <> 'FULL'`);
   if (partner_id) { params.push(Number(partner_id)); where.push(sale ? `j.customer_id = $${params.length}` : `jl.partner_id = $${params.length}`); }
   if (job_ids?.length) { params.push(job_ids.map(Number)); where.push(`j.id = any($${params.length}::int[])`); }
   if (search) { params.push(`%${search}%`); where.push(`(j.job_number ilike $${params.length} or j.plate_number ilike $${params.length})`); }
+  if (sj_received === "1" || sj_received === true) where.push("j.sj_received_at is not null");
 
   const rows = await t.query(
     `select jl.id as job_line_id, jl.job_id, jl.amount as line_amount, p.kind, jl.description,
             jl.partner_id, pt.name as partner, jl.partner_bank_id, pb.bank_name, pb.account_number, pb.holder,
-            j.job_number, j.job_date, j.plate_number, j.do_number, j.payment_scheme, j.customer_id, j.selling_after_tax,
+            j.job_number, j.job_date, j.plate_number, j.do_number, ${schemeCol} as scheme, j.customer_id, j.selling_after_tax,
+            j.gate_out_at, j.sj_received_at,
             c.pph_pct, c.ppn_pct,
             concat(lp.code, ' - ', ld.code, case when j.trip_type = 'ROUND_TRIP' then ' PP' else '' end) as route,
             coalesce((select sum(ml.amount) from account_move_line ml join account_move m on m.id = ml.move_id
                       where ml.job_line_id = jl.id and ml.cancelled_at is null and m.state = 'posted' and m.id <> $1), 0) as billed,
             coalesce((select sum(ml.amount) from account_move_line ml join account_move m on m.id = ml.move_id
-                      where ml.job_line_id = jl.id and ml.cancelled_at is null and m.state = 'posted' and m.phase = 'DP_70' and m.id <> $1), 0) as dp_billed,
+                      where ml.job_line_id = jl.id and ml.cancelled_at is null and m.state = 'posted' and m.phase = 'DP' and m.id <> $1), 0) as dp_billed,
             coalesce((select sum(ml.amount) from account_move_line ml join account_move m on m.id = ml.move_id
                       where ml.job_line_id = jl.id and ml.cancelled_at is null and m.state = 'draft'), 0) as in_draft
      from job_line jl
@@ -55,7 +65,7 @@ export async function eligible(t, { move_type, phase, partner_id, job_ids, exclu
     return rows.map((r) => {
       const remaining = money(r.line_amount - r.billed);
       let suggested = remaining;
-      if (phase === "DP_70") suggested = r.dp_billed > 0 ? 0 : Math.min(remaining, Math.round(r.line_amount * 0.7));
+      if (phase === "DP") suggested = Math.min(remaining, Math.round(r.line_amount * DP_PCT[r.scheme]) - r.dp_billed);   // sisa jatah DP (DP tambahan setelah reroute)
       return { ...r, remaining, suggested: money(Math.max(suggested, 0)) };
     });
   }
@@ -70,7 +80,7 @@ export async function eligible(t, { move_type, phase, partner_id, job_ids, exclu
     const net = g.selling_after_tax ?? Math.round(g.line_amount * (1 - g.pph_pct / 100 + g.ppn_pct / 100));
     const remaining = money(g.line_amount - g.billed);
     let suggested;
-    if (phase === "DP_70") suggested = g.dp_billed > 0 ? 0 : Math.round(g.line_amount * 0.7);
+    if (phase === "DP") suggested = Math.round(g.line_amount * DP_PCT[g.scheme]) - g.dp_billed;
     else suggested = net - g.billed;       // pelunasan / FULL: sisa setelah pajak
     return { ...g, selling_net: net, remaining, suggested: money(Math.max(Math.min(suggested, remaining), 0)) };
   });
@@ -80,29 +90,49 @@ export async function eligible(t, { move_type, phase, partner_id, job_ids, exclu
 export async function checkMove(t, moveId) {
   const [m] = await t.query("select * from account_move where id = $1", [moveId]);
   const lines = await t.query(
-    `select ml.*, j.job_number, j.state as job_state, j.customer_id, j.payment_scheme, jl.side, p.kind, jl.amount as line_amount
+    `select ml.*, j.job_number, j.state as job_state, j.customer_id, j.customer_scheme, j.vendor_scheme, j.do_number, j.gate_out_at,
+            jl.side, p.kind, jl.amount as line_amount
      from account_move_line ml join job j on j.id = ml.job_id join job_line jl on jl.id = ml.job_line_id
      join product p on p.id = jl.product_id
      where ml.move_id = $1 and ml.cancelled_at is null`, [moveId]);
   if (!lines.length) fail("Dokumen kosong, pilih minimal 1 job");
   const side = m.move_type === "out_invoice" ? "SALE" : "PURCHASE";
+  // Job yang masih rencana hanya boleh diajukan untuk kebutuhan operasional (DP / calo vendor).
+  // Tagihan customer dan pelunasan / full vendor perlu kode tugas + jam gate out.
+  const needGate = (side === "SALE" || ["SETTLEMENT", "FULL"].includes(m.phase)) && (await setting(t, "require_gate_for_billing", true)) !== false;
   for (const l of lines) {
     const tag = l.job_number;
     if (l.job_state === "cancelled") fail(`${tag}: job sudah dibatalkan`);
     if (l.side !== side) fail(`${tag}: baris order tidak cocok dengan jenis dokumen`);
+    if (needGate && (!l.do_number || !l.gate_out_at)) fail(`${tag}: isi kode tugas dan jam gate out dulu (job masih rencana)`);
     if (m.move_type === "out_invoice" && l.customer_id !== m.partner_id) fail(`${tag}: customer job beda dengan customer invoice`);
-    if (["DP_70", "SETTLEMENT_30"].includes(m.phase) && l.payment_scheme !== "70_30") fail(`${tag}: job skema 100%, tidak bisa DP / pelunasan`);
-    if (m.phase === "FULL" && l.payment_scheme !== "FULL") fail(`${tag}: job skema 70/30, tidak bisa FULL`);
+    const scheme = side === "SALE" ? l.customer_scheme : l.vendor_scheme;
+    const who = side === "SALE" ? "customer" : "vendor";
+    if (["DP", "SETTLEMENT"].includes(m.phase) && scheme === "FULL") fail(`${tag}: skema ${who} 100%, tidak bisa DP / pelunasan`);
+    if (m.phase === "FULL" && scheme !== "FULL") fail(`${tag}: skema ${who} ${scheme === "50_50" ? "50/50" : "70/30"}, tidak bisa FULL`);
     if (m.phase === "OTHER" && (side !== "PURCHASE" || l.kind === "TRUCKING")) fail(`${tag}: fase calo/biaya lain hanya untuk biaya vendor selain trucking`);
     if (m.phase !== "OTHER" && side === "PURCHASE" && l.kind !== "TRUCKING") fail(`${tag}: calo/biaya lain diajukan dengan fase "Calo / biaya lain"`);
   }
-  if (m.phase === "DP_70") {
-    const dup = await t.query(
-      `select distinct j.job_number from account_move_line ml join account_move m2 on m2.id = ml.move_id
-       join job_line jl on jl.id = ml.job_line_id join job j on j.id = ml.job_id
-       where ml.job_id = any($1::int[]) and ml.cancelled_at is null and m2.state = 'posted' and m2.phase = 'DP_70'
-         and m2.id <> $2 and jl.side = $3`, [lines.map((l) => l.job_id), moveId, side]);
-    if (dup.length) fail(`${dup[0].job_number}: DP 70% sudah pernah ${side === "SALE" ? "ditagih" : "diajukan"}`);
+  if (m.phase === "DP") {
+    // total DP (semua dokumen DP job ini) maksimal DP% x selling kotor / cost trucking terbaru
+    const caps = await t.query(
+      `select j.id, j.job_number, case when $3 = 'SALE' then j.customer_scheme else j.vendor_scheme end as scheme,
+              (select coalesce(sum(jl.amount), 0) from job_line jl join product p on p.id = jl.product_id
+               where jl.job_id = j.id and jl.side = $3 and ($3 = 'SALE' or p.kind = 'TRUCKING')) as base,
+              (select coalesce(sum(ml.amount), 0) from account_move_line ml join account_move m2 on m2.id = ml.move_id
+               join job_line jl on jl.id = ml.job_line_id
+               where ml.job_id = j.id and jl.side = $3 and ml.cancelled_at is null and m2.state = 'posted' and m2.phase = 'DP' and m2.id <> $2) as dp_other,
+              (select coalesce(sum(ml.amount), 0) from account_move_line ml join job_line jl on jl.id = ml.job_line_id
+               where ml.move_id = $2 and ml.job_id = j.id and ml.cancelled_at is null) as dp_this
+       from job j where j.id = any($1::int[])`, [[...new Set(lines.map((l) => l.job_id))], moveId, side]);
+    for (const c of caps) {
+      const pct = DP_PCT[c.scheme] || 0.7;
+      const max = Math.round(c.base * pct);
+      if (c.dp_other + c.dp_this > max + 0.5) {
+        fail(`${c.job_number}: total DP ${rupiah(c.dp_other + c.dp_this)} melebihi ${pct * 100}% ${side === "SALE" ? "selling" : "cost"} (${rupiah(max)})` +
+          (c.dp_other ? `, DP sebelumnya ${rupiah(c.dp_other)}` : ""));
+      }
+    }
   }
   const over = await t.query(
     `select j.job_number, jl.amount, sum(ml.amount) as this_move,
@@ -161,7 +191,7 @@ async function writeLines(t, moveId, move, lines) {
 // Info pajak invoice (untuk cetak): dasar = selling kotor job, PPN / PPh dari customer
 async function invoiceTax(t, moveId) {
   const [m] = await t.query("select * from account_move where id = $1", [moveId]);
-  if (m.move_type !== "out_invoice" || m.phase === "DP_70") {
+  if (m.move_type !== "out_invoice" || m.phase === "DP") {
     await t.query("update account_move set tax_basis = 0, ppn_amount = 0, pph23_amount = 0 where id = $1", [moveId]);
     return;
   }
@@ -188,12 +218,17 @@ export async function loadMove(q, id) {
   if (!move) fail("Dokumen tidak ditemukan", 404);
   move.lines = await q.query(
     `select ml.*, j.job_number, j.plate_number, j.do_number, j.job_date, j.truck_type, p.kind, payee.name as payee_name,
+            j.driver1_name, j.driver1_phone, j.driver2_name, j.driver2_phone, j.vendor_scheme, j.customer_scheme, cu.name as customer,
+            lp.code as pol, ld.code as pod, jl.amount as line_amount,
+            (select coalesce(sum(ml2.amount), 0) from account_move_line ml2 join account_move m2 on m2.id = ml2.move_id
+             where ml2.job_line_id = ml.job_line_id and m2.phase = 'DP' and m2.state = 'posted' and ml2.cancelled_at is null and m2.id < ml.move_id) as dp_prev,
+            (select a.detail from audit_log a where a.entity = 'job' and a.entity_id = j.id and a.action = 'reroute' order by a.id desc limit 1) as reroute,
             concat(lp.code, ' - ', ld.code, case when j.trip_type = 'ROUND_TRIP' then ' PP' else '' end) as route,
             coalesce((select sum(pl.amount) from account_payment_line pl where pl.move_line_id = ml.id), 0) as paid,
             (select sum(jl2.amount) from job_line jl2 where jl2.job_id = j.id and jl2.side = 'SALE') as job_selling
-     from account_move_line ml join job j on j.id = ml.job_id join job_line jl on jl.id = ml.job_line_id
-     join product p on p.id = jl.product_id left join res_partner payee on payee.id = ml.payee_partner_id
-     join location lp on lp.id = j.pol_id join location ld on ld.id = j.pod_id
+     from account_move_line ml join job j on j.id = ml.job_id left join job_line jl on jl.id = ml.job_line_id
+     left join product p on p.id = jl.product_id left join res_partner payee on payee.id = ml.payee_partner_id
+     join location lp on lp.id = j.pol_id join location ld on ld.id = j.pod_id join res_partner cu on cu.id = j.customer_id
      where ml.move_id = $1 order by ml.line_no, ml.id`, [id]);
   move.payments = await q.query(
     `select p.*, ba.name as bank_account, u.display_name as created_by_name from account_payment p
@@ -368,6 +403,105 @@ export default function financeRoutes(db) {
     if (left.n === 0) await t.query("update account_move set state = 'cancelled', cancelled_at = now(), cancel_reason = 'Semua baris dibatalkan' where id = $1", [l.move_id]);
     await audit(t, req, "account_move", l.move_id, "cancel_line", { line_id: id, job_id: l.job_id, reason: req.body.reason });
     return loadMove(t, l.move_id);
+  })));
+
+  // ---------------------------------------------------------------- selisih tanpa tujuan
+  r.get("/unassigned", requireRole(ROLES.READ), route((req) => {
+    const status = req.query.status || "OPEN";
+    const params = [];
+    const where = [];
+    if (status !== "all") { params.push(status); where.push(`u.status = $${params.length}`); }
+    if (req.query.search) {
+      params.push(`%${req.query.search}%`);
+      where.push(`(u.job_number ilike $${params.length} or u.number ilike $${params.length} or u.partner ilike $${params.length})`);
+    }
+    // seharusnya = cost / selling setelah pajak job; dibayar_job = yang menempel ke job (tanpa baris tanpa tujuan)
+    return db.query(
+      `select u.*, case when u.move_type = 'out_invoice' then up.selling_net else b.cost end as seharusnya,
+              case when u.move_type = 'out_invoice' then b.received else b.paid end as dibayar_job
+       from v_unassigned u join v_job_balance b on b.job_id = u.job_id join v_utang_piutang up on up.job_id = u.job_id
+       ${where.length ? "where " + where.join(" and ") : ""}
+       order by u.move_date, u.move_line_id`, params);
+  }));
+
+  // Perbandingan dengan angka Excel JOB REGISTRATION (salinan dari impor / unggahan terakhir)
+  r.get("/selisih/excel", requireRole(ROLES.READ), route(() => compareJobReg(db)));
+  r.post("/selisih/excel", requireRole(ROLES.FINANCE), express.raw({ type: () => true, limit: "60mb" }), route(async (req) => {
+    if (!req.body?.length) fail("File kosong");
+    let info;
+    try {
+      info = await saveJobRegSnapshot({ file: req.body, name: String(req.query.name || "JOB REGISTRATION.xlsx"), target: db });
+    } catch (err) {
+      fail(`File tidak bisa dibaca sebagai JOB REGISTRATION: ${err.message}`);
+    }
+    await audit(db, req, "import", null, "jobreg_snapshot", info);
+    return compareJobReg(db);
+  }));
+
+  // Saldo partner dari selisih yang dijadikan saldo: vendor lebih dibayar / customer lebih tagih yang sudah dibayar
+  r.get("/partner-balances", requireRole(ROLES.READ), route(() => db.query(
+    `select partner_id, partner, case when move_type = 'in_invoice' then 'VENDOR' else 'CUSTOMER' end as side,
+            count(*)::int as items, sum(paid) as amount
+     from v_unassigned where status = 'PARTNER_BALANCE'
+     group by partner_id, partner, move_type order by side, partner`)));
+
+  const lockUnassigned = async (t, id) => {
+    const [l] = await t.query("select * from account_move_line where id = $1 for update", [id]);
+    if (!l || l.cancelled_at) fail("Baris tidak ditemukan / sudah dibatalkan", 404);
+    if (l.job_line_id) fail("Baris ini sudah punya tujuan");
+    const [u] = await t.query("select * from v_unassigned where move_line_id = $1", [id]);
+    if (!u) fail("Dokumen baris ini belum posted / sudah dibatalkan");
+    return { l, u };
+  };
+
+  // Arahkan ke baris order job: baris yang ada (job_line_id, sisanya harus cukup) atau baris baru (kind)
+  r.post("/unassigned/:id/assign", requireRole(ROLES.FINANCE), route((req) => db.tx(async (t) => {
+    const id = Number(req.params.id);
+    const { l, u } = await lockUnassigned(t, id);
+    const b = req.body || {};
+    const side = u.move_type === "out_invoice" ? "SALE" : "PURCHASE";
+    let jobLineId;
+    if (b.job_line_id) {
+      const [s] = await t.query("select * from v_job_line_status where job_line_id = $1", [Number(b.job_line_id)]);
+      if (!s || s.job_id !== l.job_id || s.side !== side) fail("Baris order harus dari job & sisi yang sama");
+      if (money(s.amount - s.billed) + 0.004 < l.amount) fail(`Sisa baris order ${rupiah(s.amount - s.billed)}, kurang dari ${rupiah(l.amount)}`);
+      jobLineId = s.job_line_id;
+    } else {
+      if (!KINDS.includes(b.kind)) fail("Pilih jenis biaya / selling");
+      const [job] = await t.query("select state, customer_id from job where id = $1", [l.job_id]);
+      if (job.state === "cancelled") fail("Job sudah dibatalkan");
+      const [prod] = await t.query("select id from product where kind = $1", [b.kind]);
+      jobLineId = await insertRow(t, "job_line", {
+        job_id: l.job_id, side, product_id: prod.id,
+        partner_id: side === "SALE" ? job.customer_id : l.payee_partner_id,
+        description: b.description || l.description || null, amount: l.amount,
+      });
+      await audit(t, req, "job_line", jobLineId, "create", { job_id: l.job_id, side, kind: b.kind, amount: l.amount, from_unassigned: id });
+    }
+    await t.query("update account_move_line set job_line_id = $1, resolution = null, resolution_note = $2, resolved_at = now(), resolved_by = $3 where id = $4",
+      [jobLineId, b.note || null, req.user.id, id]);
+    await audit(t, req, "account_move", l.move_id, "assign_unassigned", { line_id: id, job_id: l.job_id, job_line_id: jobLineId, amount: l.amount, note: b.note });
+    return { ok: true, job_line_id: jobLineId };
+  })));
+
+  // Jadikan saldo partner (hanya yang sudah dibayar)
+  r.post("/unassigned/:id/partner-balance", requireRole(ROLES.FINANCE), route((req) => db.tx(async (t) => {
+    const id = Number(req.params.id);
+    const { l, u } = await lockUnassigned(t, id);
+    if (!(u.paid > 0)) fail("Belum ada pembayaran. Selisih yang belum dibayar cukup dibatalkan barisnya.");
+    if (!String(req.body?.reason || "").trim()) fail("Keterangan wajib diisi");
+    await t.query("update account_move_line set resolution = 'PARTNER_BALANCE', resolution_note = $1, resolved_at = now(), resolved_by = $2 where id = $3",
+      [req.body.reason, req.user.id, id]);
+    await audit(t, req, "account_move", l.move_id, "partner_balance", { line_id: id, job_id: l.job_id, amount: u.paid, reason: req.body.reason });
+    return { ok: true };
+  })));
+
+  r.post("/unassigned/:id/reopen", requireRole(ROLES.FINANCE), route((req) => db.tx(async (t) => {
+    const id = Number(req.params.id);
+    const { l } = await lockUnassigned(t, id);
+    await t.query("update account_move_line set resolution = null, resolution_note = null, resolved_at = null, resolved_by = null where id = $1", [id]);
+    await audit(t, req, "account_move", l.move_id, "reopen_unassigned", { line_id: id });
+    return { ok: true };
   })));
 
   // ---------------------------------------------------------------- pembayaran

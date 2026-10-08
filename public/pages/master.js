@@ -1,15 +1,16 @@
 // Master data: tabel + form generik per tab.
-import { state, api, view, esc, rp, tgl, options, enumOptions, table, toast, openModal, loadMaster, num, locLabel, can, isAdmin } from "../lib.js";
+import { state, api, view, esc, rp, tgl, options, enumOptions, table, toast, openModal, loadMaster, num, locLabel, can, isAdmin, SCHEME_SHORT } from "../lib.js";
 
 const TRIP = { ONE_WAY: "One way", ROUND_TRIP: "PP" };
 const TABS = {
   partners: {
     label: "Partner", api: "partners", write: ["ADMIN", "FINANCE"],
-    note: "Customer, vendor, calo dalam satu daftar. Pajak customer: selling setelah pajak = selling - PPh% + PPN% (customer tanpa pajak: 0 dan 0).",
+    note: "Customer, vendor, calo dalam satu daftar. Pajak customer: selling setelah pajak = selling - PPh% + PPN% (customer tanpa pajak: 0 dan 0). " +
+      "Skema bayar default dipakai saat job baru dibuat (kosong = dalam kota 100%, antar kota 70/30; vendor hanya 70/30 atau 100%).",
     columns: [["code", "Kode"], ["name", "Nama"], ["is_customer", "Customer", "bool"], ["is_vendor", "Vendor", "bool"], ["pph_pct", "PPh %", "pct"],
-      ["ppn_pct", "PPN %", "pct"], ["payment_terms_days", "Tempo (hari)", "number"], ["phone", "HP"], ["email", "Email"], ["address", "Alamat", "wide"],
+      ["ppn_pct", "PPN %", "pct"], ["payment_scheme", "Skema bayar default", "scheme"], ["sj_tracking", "Lacak SJ (SJ fisik dikirim balik lewat kurir)", "bool"], ["payment_terms_days", "Tempo (hari)", "number"], ["phone", "HP"], ["email", "Email"], ["address", "Alamat", "wide"],
       ["npwp", "NPWP"], ["bill_to_name", "Nama di invoice"], ["bill_to_address", "Alamat di invoice", "wide"], ["bill_to_npwp", "NPWP di invoice"], ["active", "Aktif", "bool"]],
-    list: ["code", "name", "is_customer", "is_vendor", "pph_pct", "ppn_pct", "phone", "active"],
+    list: ["code", "name", "is_customer", "is_vendor", "pph_pct", "ppn_pct", "payment_scheme", "phone", "active"],
   },
   "partner-banks": {
     label: "Rekening Penerima", api: "partner-banks", write: ["ADMIN", "FINANCE", "OPERATIONAL"],
@@ -45,19 +46,21 @@ function cell(type, v) {
   if (type === "location") return esc(state.cache.locations.find((l) => l.id === v)?.code || "");
   if (type === "trip") return TRIP[v] || "";
   if (type === "bankkind") return v === "OPERATIONAL" ? "Kas operasional" : "Bank";
+  if (type === "scheme") return v ? SCHEME_SHORT[v] : "-";
   if (type === "date") return tgl(v);
   return esc(v ?? "");
 }
 
 function input(type, name, v, isNew) {
   const p = state.cache.partners;
-  if (type === "bool") return `<input type="checkbox" name="${name}" ${v || (v === undefined && isNew && name === "active") ? "checked" : ""}>`;
+  if (type === "bool") return `<input type="checkbox" name="${name}" ${v || (v === undefined && isNew && ["active", "sj_tracking"].includes(name)) ? "checked" : ""}>`;
   if (type === "customer") return `<select name="${name}">${options(p.filter((x) => x.is_customer), v, undefined, "Umum (semua customer)")}</select>`;
   if (type === "vendor") return `<select name="${name}" ${name === "partner_id" ? "required" : ""}>${options(p.filter((x) => x.is_vendor || name === "partner_id"), v, undefined, "- pilih -")}</select>`;
   if (type === "location") return `<select name="${name}" required>${options(state.cache.locations, v, locLabel, "- pilih -")}</select>`;
   if (type === "trip") return `<select name="${name}">${enumOptions({ ONE_WAY: "One way", ROUND_TRIP: "PP / round trip" }, v)}</select>`;
   if (type === "bankkind") return `<select name="${name}">${enumOptions({ BANK: "Bank", OPERATIONAL: "Kas operasional" }, v || "BANK")}</select>`;
   if (type === "date") return `<input type="date" name="${name}" value="${tgl(v)}">`;
+  if (type === "scheme") return `<select name="${name}"><option value="">Ikut lingkup job</option>${enumOptions({ "70_30": "DP 70% + pelunasan 30%", "50_50": "DP 50% + pelunasan 50% (customer)", FULL: "Langsung 100%" }, v)}</select>`;
   if (type === "number" || type === "pct") return `<input type="number" step="${type === "pct" ? "0.01" : "1"}" name="${name}" value="${esc(v ?? (type === "pct" ? 0 : ""))}">`;
   return `<input name="${name}" value="${esc(v ?? "")}" ${type === "money" ? 'class="num"' : ""}>`;
 }
@@ -106,13 +109,19 @@ async function renderSettings() {
       <label>NPWP<input name="company_npwp" value="${esc(s.company_npwp || "")}"></label>
       <label class="wide">Alamat<textarea name="company_address" rows="2">${esc(s.company_address || "")}</textarea></label>
       <label class="check"><input type="checkbox" name="vendor_approval_required" ${s.vendor_approval_required !== false ? "checked" : ""}> Pengajuan vendor perlu persetujuan ADMIN</label>
+      <label class="check wide"><input type="checkbox" name="require_gate_for_billing" ${s.require_gate_for_billing !== false ? "checked" : ""}> Invoice customer dan pelunasan / full vendor wajib kode tugas + jam gate out (job rencana hanya boleh DP / calo vendor)</label>
+      <label>Target resi SJ dari driver (hari setelah gate in)<input type="number" min="0" name="sj_target_resi_days" value="${esc(s.sj_target_resi_days ?? 2)}"></label>
+      <label>Target SJ di kurir (hari)<input type="number" min="0" name="sj_target_kurir_days" value="${esc(s.sj_target_kurir_days ?? 4)}"></label>
+      <label>Target kirim SJ ke customer (hari setelah diterima)<input type="number" min="0" name="sj_target_kirim_days" value="${esc(s.sj_target_kirim_days ?? 3)}"></label>
     </div><div class="modal-foot"><button class="primary" type="submit">Simpan</button></div></form>`;
   document.getElementById("setForm").onsubmit = async (e) => {
     e.preventDefault();
     const f = e.target;
     try {
       await api("PUT", "/settings", { company_name: f.company_name.value, company_npwp: f.company_npwp.value, company_address: f.company_address.value,
-        vendor_approval_required: f.vendor_approval_required.checked });
+        vendor_approval_required: f.vendor_approval_required.checked, require_gate_for_billing: f.require_gate_for_billing.checked,
+        sj_target_resi_days: Number(f.sj_target_resi_days.value), sj_target_kurir_days: Number(f.sj_target_kurir_days.value),
+        sj_target_kirim_days: Number(f.sj_target_kirim_days.value) });
       await loadMaster();
       toast("Pengaturan disimpan");
     } catch (err) { toast(err.message, true); }

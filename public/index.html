@@ -4,15 +4,24 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ERP AMICO v2</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=Space+Grotesk:wght@400;500;600&display=swap">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <aside class="sidebar" id="sidebar" hidden>
-    <div class="brand">AMICO <span>ERP v2</span></div>
+    <a class="brand" href="#/dashboard">
+      <span class="brand-mark">A</span>
+      <span class="brand-text"><b>amico<i></i></b><small>ERP v2 · Logistik</small></span>
+    </a>
+    <div class="user-card" id="userBox"></div>
     <nav id="nav"></nav>
-    <div class="sidebar-foot" id="userBox"></div>
   </aside>
-  <main id="view"></main>
+  <div class="shell">
+    <header class="topbar" id="topbar" hidden></header>
+    <main id="view"></main>
+  </div>
   <dialog id="modal"><form method="dialog" id="modalForm"></form></dialog>
   <div id="toast" role="status"></div>
   <script type="module" src="app.js"></script>

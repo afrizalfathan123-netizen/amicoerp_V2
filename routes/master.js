@@ -8,7 +8,7 @@ const MASTER = {
   partners: {
     table: "res_partner", write: ROLES.FINANCE, order: "name",
     fields: ["code", "name", "is_customer", "is_vendor", "phone", "email", "address", "npwp", "bill_to_name", "bill_to_address",
-      "bill_to_npwp", "pph_pct", "ppn_pct", "payment_terms_days", "active"],
+      "bill_to_npwp", "pph_pct", "ppn_pct", "payment_terms_days", "payment_scheme", "sj_tracking", "active"],
   },
   "partner-banks": {
     table: "res_partner_bank", write: ROLES.JOB_EDIT, order: "partner_id, id",
@@ -28,7 +28,8 @@ const MASTER = {
   products: { table: "product", write: [], order: "id", fields: [] },
 };
 
-const SETTING_KEYS = ["company_name", "company_address", "company_npwp", "vendor_approval_required"];
+const SETTING_KEYS = ["company_name", "company_address", "company_npwp", "vendor_approval_required",
+  "require_gate_for_billing", "sj_target_resi_days", "sj_target_kurir_days", "sj_target_kirim_days"];
 
 export default function masterRoutes(db) {
   const r = express.Router();

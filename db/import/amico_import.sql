@@ -42,7 +42,8 @@ create or replace function amico_legacy.billed(p_job_line_id integer) returns nu
   where ml.job_line_id = p_job_line_id and ml.cancelled_at is null and m.state = 'posted'
 $$;
 
--- Tempel nominal ke baris order job; kelebihan dibuatkan baris (jenis biaya itu kalau belum ada, selain itu SELISIH)
+-- Tempel nominal ke baris order job. Kelebihan: biaya vendor jenis baru -> baris order jenis itu;
+-- selain itu -> "selisih tanpa tujuan" (baris dokumen tanpa baris order, diarahkan finance nanti)
 create or replace function amico_legacy.add_lines(
   p_move_id integer, p_job_id integer, p_side text, p_kind text, p_amount numeric, p_counted boolean, p_key text,
   p_payee_partner integer default null, p_bank text default null, p_account text default null, p_holder text default null,
@@ -76,16 +77,17 @@ begin
     v_left := v_left - v_take;
   end loop;
   if v_left > 0 then
-    insert into job_line (job_id, side, product_id, partner_id, description, amount, legacy_key)
-    values (p_job_id, p_side,
-            (select id from product where kind = case when p_side = 'PURCHASE' and p_kind <> 'TRUCKING' and not exists (
-                select 1 from job_line jl join product p on p.id = jl.product_id where jl.job_id = p_job_id and jl.side = p_side and p.kind = p_kind)
-              then p_kind else 'SELISIH' end),
-            case when p_side = 'PURCHASE' then p_payee_partner end, 'Dari data lama: ' || p_key, v_left, 'import:' || p_key)
-    returning id into v_line;
+    v_line := null;
+    if p_side = 'PURCHASE' and p_kind <> 'TRUCKING' and not exists (
+        select 1 from job_line jl join product p on p.id = jl.product_id where jl.job_id = p_job_id and jl.side = p_side and p.kind = p_kind) then
+      insert into job_line (job_id, side, product_id, partner_id, description, amount, legacy_key)
+      values (p_job_id, p_side, (select id from product where kind = p_kind), p_payee_partner, 'Dari data lama: ' || p_key, v_left, 'import:' || p_key)
+      returning id into v_line;
+    end if;
     v_no := v_no + 1;
-    insert into account_move_line (move_id, line_no, job_line_id, job_id, amount, payee_partner_id, payee_bank_name, payee_account_number, payee_holder, legacy_item_id)
-    values (p_move_id, v_no, v_line, p_job_id, v_left, p_payee_partner, p_bank, p_account, p_holder, p_legacy_item);
+    insert into account_move_line (move_id, line_no, job_line_id, job_id, amount, description, payee_partner_id, payee_bank_name, payee_account_number, payee_holder, legacy_item_id)
+    values (p_move_id, v_no, v_line, p_job_id, v_left, case when v_line is null then 'Selisih tanpa tujuan (data lama: ' || p_key || ')' end,
+            p_payee_partner, p_bank, p_account, p_holder, p_legacy_item);
   end if;
 end $$;
 
@@ -251,7 +253,7 @@ begin
   -- ---------------------------------------------------------------- job
   insert into job (job_number, job_date, customer_id, vendor_id, pol_id, pod_id, trip_type, service_type, delivery_scope, rit_number,
                    truck_type, vehicle_id, plate_number, driver1_name, driver1_phone, driver2_name, driver2_phone, do_number,
-                   payment_scheme, selling_mode, state, gate_out_at, gate_in_at,
+                   customer_scheme, vendor_scheme, selling_mode, state, gate_out_at, gate_in_at,
                    sj_number, sj_resi_received_at, sj_received_at, sj_resi_number, sj_delivered_at, sj_delivered_resi_number,
                    note, source, legacy_id, created_at)
   select lj.job_number, lj.operational_date, c.id, vm.id, lp.id, ld.id,
@@ -260,6 +262,7 @@ begin
          case when lj.delivery_scope = 'INNERCITY' then 'INNERCITY' else 'INTERCITY' end, lj.rit_number,
          coalesce(lv.truck_type, '-'), v.id, amico_legacy.norm(lv.plate_number),
          lj.driver_1_name, lj.driver_1_phone, lj.driver_2_name, lj.driver_2_phone, lj.task_code,
+         case when lj.delivery_scope = 'INNERCITY' then 'FULL' else '70_30' end,
          case when lj.delivery_scope = 'INNERCITY' then 'FULL' else '70_30' end, 'CUSTOM',
          case when lj.gate_in_at is not null then 'done' else 'confirmed' end, lj.gate_out_at, lj.gate_in_at,
          lj.legacy_sj_number, amico_legacy.jkt_date(lj.sj_resi_received_at), amico_legacy.jkt_date(lj.sj_received_at), lj.sj_resi_number,
@@ -276,13 +279,15 @@ begin
   where lj.deleted_at is null;
   select count(*) into v_skipped from amico_legacy.jobs lj where lj.deleted_at is null and not exists (select 1 from job j where j.legacy_id = lj.id);
 
-  -- job yang pernah diajukan / ditagih FULL = skema 100%
-  update job j set payment_scheme = 'FULL'
-  where j.payment_scheme <> 'FULL' and (
-    exists (select 1 from amico_legacy.payment_request_items i join amico_legacy.payment_request_batches pb on pb.id = i.batch_id
-            where i.job_id = j.legacy_id and i.request_type = 'FULL' and pb.cancelled_at is null and pb.status not in ('CANCELLED', 'REJECTED'))
-    or exists (select 1 from amico_legacy.customer_invoice_items i join amico_legacy.customer_invoice_batches cb on cb.id = i.batch_id
-               where i.job_id = j.legacy_id and cb.invoice_type = 'FULL' and cb.cancelled_at is null));
+  -- job yang pernah diajukan FULL = skema vendor 100%, pernah ditagih FULL = skema customer 100%
+  update job j set vendor_scheme = 'FULL'
+  where j.vendor_scheme <> 'FULL' and exists (
+    select 1 from amico_legacy.payment_request_items i join amico_legacy.payment_request_batches pb on pb.id = i.batch_id
+    where i.job_id = j.legacy_id and i.request_type = 'FULL' and pb.cancelled_at is null and pb.status not in ('CANCELLED', 'REJECTED'));
+  update job j set customer_scheme = 'FULL'
+  where j.customer_scheme <> 'FULL' and exists (
+    select 1 from amico_legacy.customer_invoice_items i join amico_legacy.customer_invoice_batches cb on cb.id = i.batch_id
+    where i.job_id = j.legacy_id and cb.invoice_type = 'FULL' and cb.cancelled_at is null);
 
   -- baris order: selling_items atau selling_amount; cost_items atau cost_amount
   insert into job_line (job_id, side, product_id, partner_id, description, amount, legacy_key)
@@ -320,7 +325,7 @@ begin
     insert into account_move (number, move_type, phase, move_date, state, approval_state, payment_channel, note, rejection_reason, cancel_reason,
                               legacy_source, legacy_id, legacy_number, posted_at, approved_at, cancelled_at, created_at)
     values (case when v_state = 'draft' then null else b.batch_number end, 'in_invoice',
-            case when b.request_type in ('DP_70', 'SETTLEMENT_30', 'FULL') then b.request_type else 'SETTLEMENT_30' end,
+            case b.request_type when 'DP_70' then 'DP' when 'FULL' then 'FULL' else 'SETTLEMENT' end,
             amico_legacy.jkt_date(b.created_at), v_state,
             case b.status when 'PENDING_APPROVAL' then 'PENDING' when 'REJECTED' then 'REJECTED'
                           when 'SUBMITTED' then 'NOT_REQUIRED' when 'DRAFT' then 'NOT_REQUIRED' else 'APPROVED' end,
@@ -413,7 +418,7 @@ begin
     v_deduct := case when b.invoice_type = 'DP_70' then false when coalesce(b.ppn_amount, 0) > 0 or coalesce(b.pph23_amount, 0) > 0 then true else b.pph_pct > 0 end;
     insert into account_move (number, move_type, phase, partner_id, move_date, bank_account_id, state, tax_basis, ppn_amount, pph23_amount,
                               bill_to_name, bill_to_address, bill_to_npwp, cancel_reason, legacy_source, legacy_id, legacy_number, posted_at, cancelled_at, created_at)
-    values (b.invoice_number, 'out_invoice', case when b.invoice_type in ('DP_70', 'SETTLEMENT_30', 'FULL') then b.invoice_type else 'DP_70' end,
+    values (b.invoice_number, 'out_invoice', case b.invoice_type when 'SETTLEMENT_30' then 'SETTLEMENT' when 'FULL' then 'FULL' else 'DP' end,
             b.partner_id, b.invoice_date, coalesce(b.bank_id, v_bank), v_state, coalesce(b.subtotal, 0), coalesce(b.ppn_amount, 0), coalesce(b.pph23_amount, 0),
             b.bill_to_name, b.bill_to_address, b.bill_to_npwp, b.cancel_reason, 'customer_invoice_batches', b.id, b.invoice_number,
             coalesce(b.created_at, b.invoice_date::timestamptz), b.cancelled_at, coalesce(b.created_at, now()))
@@ -435,12 +440,12 @@ begin
 
   -- pembayaran customer (data lama hanya punya status lunas per job)
   for st in
-    select s.*, j.id as job_id_new, j.job_number, j.payment_scheme
+    select s.*, j.id as job_id_new, j.job_number, j.customer_scheme
     from amico_legacy.finance_workflow_status s join job j on j.legacy_id = s.job_id
     where s.workflow_bucket = 'CUSTOMER_INVOICE' and s.workflow_action in ('DP_PAID', 'SETTLEMENT_PAID') and s.amount > 0
     order by s.processed_at
   loop
-    v_phase := case when st.workflow_action = 'DP_PAID' then 'DP_70' when st.payment_scheme = 'FULL' then 'FULL' else 'SETTLEMENT_30' end;
+    v_phase := case when st.workflow_action = 'DP_PAID' then 'DP' when st.customer_scheme = 'FULL' then 'FULL' else 'SETTLEMENT' end;
     v_left := st.amount;
     for t in
       select m.id, m.number, m.bank_account_id,
@@ -461,13 +466,17 @@ begin
   for st in
     with legacy as (
       select j.id as job_id, j.job_number, j.customer_id, s.workflow_bucket,
-             case when s.workflow_action like 'DP_%' then 'DP_70' when j.payment_scheme = 'FULL' then 'FULL' else 'SETTLEMENT_30' end as phase,
+             case when s.workflow_action like 'DP_%' then 'DP'
+                  when (case s.workflow_bucket when 'CUSTOMER_INVOICE' then j.customer_scheme else j.vendor_scheme end) = 'FULL' then 'FULL'
+                  else 'SETTLEMENT' end as phase,
              max(s.amount) filter (where s.workflow_action like '%_PAID') as paid_amount,
              max(s.amount) filter (where s.workflow_action like '%_REQUESTED') as requested_amount,
              max(s.processed_at) as processed_at
       from amico_legacy.finance_workflow_status s join job j on j.legacy_id = s.job_id
       group by j.id, j.job_number, j.customer_id, s.workflow_bucket,
-               case when s.workflow_action like 'DP_%' then 'DP_70' when j.payment_scheme = 'FULL' then 'FULL' else 'SETTLEMENT_30' end
+               case when s.workflow_action like 'DP_%' then 'DP'
+                  when (case s.workflow_bucket when 'CUSTOMER_INVOICE' then j.customer_scheme else j.vendor_scheme end) = 'FULL' then 'FULL'
+                  else 'SETTLEMENT' end
     ),
     fin as (
       select ml.job_id, case m.move_type when 'out_invoice' then 'CUSTOMER_INVOICE' else 'VENDOR_BILL' end as bucket, m.phase,
@@ -519,12 +528,12 @@ end $$;
 create or replace view amico_legacy.v_rekon as
 with baru as (
   select ml.job_id, case m.move_type when 'out_invoice' then 'CUSTOMER_INVOICE' else 'VENDOR_BILL' end as bucket,
-         case when m.phase = 'DP_70' then 'DP' else 'SETTLEMENT' end as fase,
+         case when m.phase = 'DP' then 'DP' else 'SETTLEMENT' end as fase,
          sum(ml.amount) as diajukan,
          sum(coalesce((select sum(pl.amount) from account_payment_line pl where pl.move_line_id = ml.id), 0)) as dibayar
   from account_move m join account_move_line ml on ml.move_id = m.id
   where m.state = 'posted' and ml.cancelled_at is null
-  group by ml.job_id, m.move_type, case when m.phase = 'DP_70' then 'DP' else 'SETTLEMENT' end
+  group by ml.job_id, m.move_type, case when m.phase = 'DP' then 'DP' else 'SETTLEMENT' end
 ),
 lama as (
   select j.id as job_id, s.workflow_bucket as bucket, case when s.workflow_action like 'DP_%' then 'DP' else 'SETTLEMENT' end as fase,

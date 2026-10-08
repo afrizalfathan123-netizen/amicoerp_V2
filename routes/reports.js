@@ -4,9 +4,11 @@ import express from "express";
 import ExcelJS from "exceljs";
 import { requireRole, ROLES } from "../lib/auth.js";
 import { route, today } from "../lib/util.js";
+import { buildAllExport } from "../lib/export-all.js";
 
-const PHASE_ORDER = "case phase when 'DP_70' then 1 when 'SETTLEMENT_30' then 2 when 'FULL' then 3 else 4 end";
-const PHASE_NAMES = { DP_70: "DP 70%", SETTLEMENT_30: "Pelunasan 30%", FULL: "Full 100%", OTHER: "Calo / lain" };
+const PHASE_ORDER = "case phase when 'DP' then 1 when 'SETTLEMENT' then 2 when 'FULL' then 3 else 4 end";
+const PHASE_NAMES = { DP: "DP", SETTLEMENT: "Pelunasan", FULL: "Full 100%", OTHER: "Calo / lain" };
+const SCHEME_NAMES = { "70_30": "70/30", "50_50": "50/50", FULL: "100%" };
 
 function filterSql(query, { date = "job_date", allowed = [] } = {}) {
   const where = [];
@@ -15,7 +17,7 @@ function filterSql(query, { date = "job_date", allowed = [] } = {}) {
   if (query.from) add(`${date} >= ?`, query.from);
   if (query.to) add(`${date} <= ?`, query.to);
   if (allowed.includes("customer_id") && query.customer_id) add("customer_id = ?", Number(query.customer_id));
-  if (allowed.includes("scheme") && query.scheme) add("payment_scheme = ?", query.scheme);
+  if (allowed.includes("scheme") && query.scheme) add("scheme = ?", query.scheme);
   if (allowed.includes("side") && query.side) add("side = ?", query.side);
   if (allowed.includes("phase") && query.phase) add("phase = ?", query.phase);
   if (allowed.includes("status")) {
@@ -32,11 +34,12 @@ function filterSql(query, { date = "job_date", allowed = [] } = {}) {
 const COLUMNS = {
   utang_piutang: [
     ["JOB NUMBER", "job_number"], ["DO NUMBER", "do_number"], ["CUSTOMER", "customer"], ["KETERANGAN", "keterangan"],
+    ["SKEMA CUSTOMER", "customer_scheme_label"], ["SKEMA VENDOR", "vendor_scheme_label"],
     ["UTANG 100%", "utang_100"], ["UTANG 100% TERBAYAR", "utang_100_terbayar"], ["UTANG 70%", "utang_70"], ["UTANG 70% TERBAYAR", "utang_70_terbayar"],
     ["UTANG 30% BELUM BAYAR", "utang_30_belum_bayar"], ["UTANG 30% TERBAYAR", "utang_30_terbayar"],
     ["PIUTANG 100% BELUM TERBAYAR", "piutang_100_belum_terbayar"], ["PIUTANG 100% TERBAYAR", "piutang_100_terbayar"],
-    ["PIUTANG 70% BELUM TERTAGIH", "piutang_70_belum_tertagih"], ["PIUTANG 70% TERTAGIH", "piutang_70_tertagih"], ["PIUTANG 70% TERBAYAR", "piutang_70_terbayar"],
-    ["PIUTANG 30% BELUM TERTAGIH", "piutang_30_belum_tertagih"], ["PIUTANG 30% TERTAGIH", "piutang_30_tertagih"], ["PIUTANG 30% TERBAYAR", "piutang_30_terbayar"],
+    ["PIUTANG DP (70/50%) BELUM TERTAGIH", "piutang_70_belum_tertagih"], ["PIUTANG DP (70/50%) TERTAGIH", "piutang_70_tertagih"], ["PIUTANG DP (70/50%) TERBAYAR", "piutang_70_terbayar"],
+    ["PIUTANG PELUNASAN (30/50%) BELUM TERTAGIH", "piutang_30_belum_tertagih"], ["PIUTANG PELUNASAN (30/50%) TERTAGIH", "piutang_30_tertagih"], ["PIUTANG PELUNASAN (30/50%) TERBAYAR", "piutang_30_terbayar"],
     ["CALO / LAIN TERBAYAR", "calo_lain_terbayar"], ["CALO / LAIN BELUM BAYAR", "calo_lain_belum_bayar"],
     ["KURANG TRANSFER KE VENDOR", "kurang_transfer_vendor"], ["KURANG BAYAR DARI CUSTOMER", "kurang_bayar_customer"],
   ],
@@ -45,14 +48,14 @@ const COLUMNS = {
     ["NOMINAL", "nominal"], ["REKENING", "rekening"], ["NO PEMBAYARAN", "payment_number"], ["DOKUMEN", "move_number"], ["MEMBALIK", "membalik"],
   ],
   posisi: [
-    ["JOB NUMBER", "job_number"], ["TANGGAL", "job_date"], ["CUSTOMER", "customer"], ["SKEMA", "payment_scheme"], ["SISI", "side_label"],
+    ["JOB NUMBER", "job_number"], ["TANGGAL", "job_date"], ["CUSTOMER", "customer"], ["SKEMA", "scheme_label"], ["SISI", "side_label"],
     ["FASE", "phase_label"], ["RENCANA", "planned"], ["BELUM DIAJUKAN / DITAGIH", "not_billed"], ["DIAJUKAN / DITAGIH BELUM DIBAYAR", "outstanding"],
     ["SUDAH DIBAYAR", "paid"], ["TOTAL BELUM DIBAYAR", "unpaid"],
   ],
   kurang: [
     ["JOB NUMBER", "job_number"], ["TANGGAL", "job_date"], ["CUSTOMER", "customer"], ["ARAH", "arah"], ["SEHARUSNYA", "seharusnya"],
     ["DP SEHARUSNYA (70%)", "dp_seharusnya"], ["DP DIBAYAR", "dp_dibayar"], ["PELUNASAN SEHARUSNYA", "pelunasan_seharusnya"],
-    ["PELUNASAN DIBAYAR", "pelunasan_dibayar"], ["DP KURANG", "dp_kurang"], ["PELUNASAN KURANG", "pelunasan_kurang"], ["TOTAL KURANG", "kurang"],
+    ["PELUNASAN DIBAYAR", "pelunasan_dibayar"], ["DP KURANG", "dp_kurang"], ["PELUNASAN KURANG", "pelunasan_kurang"], ["TOTAL KURANG", "kurang"], ["KE KAS AMICO (+ SURPLUS / - MINUS)", "selisih_kas"],
   ],
   tracker: [
     ["JOB NUMBER", "job_number"], ["TANGGAL", "job_date"], ["CUSTOMER", "customer"], ["POL", "pol"], ["POD", "pod"], ["TRUK", "truck_type"],
@@ -85,7 +88,7 @@ export default function reportRoutes(db) {
       `select count(*)::int as jobs,
               coalesce(sum(selling), 0) as selling, coalesce(sum(cost), 0) as cost,
               coalesce(sum(invoiced - received), 0) as piutang, coalesce(sum(requested - paid), 0) as utang,
-              coalesce(sum(received - paid), 0) as kas
+              (select coalesce(sum(case when payment_type = 'inbound' then amount else -amount end), 0) from account_payment) as kas
        from v_job_balance b join job j on j.id = b.job_id where j.state <> 'cancelled'`);
     const [pos] = await db.query(
       `select coalesce(sum(not_billed) filter (where side = 'SALE'), 0) as perlu_ditagih,
@@ -99,13 +102,19 @@ export default function reportRoutes(db) {
               count(*) filter (where trip_status = 'DALAM PERJALANAN' and lewat_sla)::int as lewat_sla
        from v_tracker`);
     const [kurang] = await db.query("select count(distinct job_id)::int as jobs, coalesce(sum(kurang), 0) as total from v_kurang_transfer");
+    const [tanpa] = await db.query(
+      `select count(*) filter (where status = 'OPEN')::int as n, coalesce(sum(amount) filter (where status = 'OPEN'), 0) as total,
+              coalesce(sum(paid) filter (where status = 'PARTNER_BALANCE' and move_type = 'in_invoice'), 0) as saldo_vendor,
+              coalesce(sum(paid) filter (where status = 'PARTNER_BALANCE' and move_type = 'out_invoice'), 0) as saldo_customer
+       from v_unassigned`);
     const monthly = await db.query(
       `select to_char(tanggal, 'YYYY-MM') as bulan,
               sum(case when arah = 'MASUK' then nominal else 0 end) as masuk,
               sum(case when arah = 'KELUAR' then nominal else 0 end) as keluar
        from v_cash_ledger group by 1 order by 1 desc limit 12`);
     return { totals: { ...t, ...pos, menunggu_persetujuan: pend.n, menunggu_persetujuan_total: pend.total, titipan: titip.titipan,
-      trip_jalan: trip.jalan, trip_lewat_sla: trip.lewat_sla, kurang_transfer_jobs: kurang.jobs, kurang_transfer_total: kurang.total }, monthly };
+      trip_jalan: trip.jalan, trip_lewat_sla: trip.lewat_sla, kurang_transfer_jobs: kurang.jobs, kurang_transfer_total: kurang.total,
+      tanpa_tujuan: tanpa.n, tanpa_tujuan_total: tanpa.total, saldo_vendor: tanpa.saldo_vendor, saldo_customer: tanpa.saldo_customer }, monthly };
   }));
 
   r.get("/rekap", read, route(async (req) => {
@@ -173,8 +182,21 @@ export default function reportRoutes(db) {
       res.status(500).send(err.message);
     }
   });
+  // Seluruh isi database (ADMIN): daftar tabel, kolom, dan isi tiap tabel / view laporan
+  r.get("/export/semua.xlsx", requireRole(ROLES.ADMIN), async (req, res) => {
+    try {
+      const wb = await buildAllExport(db);
+      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      res.setHeader("Content-Disposition", `attachment; filename="ERP-AMICO-semua-data-${today()}.xlsx"`);
+      await wb.xlsx.write(res);
+      res.end();
+    } catch (err) {
+      res.status(500).send(err.message);
+    }
+  });
   exportRoute("utang-piutang.xlsx", "UTANG-PIUTANG", "UTANG PIUTANG", COLUMNS.utang_piutang,
-    () => db.query("select * from v_utang_piutang order by job_number"));
+    async () => (await db.query("select * from v_utang_piutang order by job_number"))
+      .map((x) => ({ ...x, customer_scheme_label: SCHEME_NAMES[x.customer_scheme], vendor_scheme_label: SCHEME_NAMES[x.vendor_scheme] })));
   exportRoute("jurnal-kas.xlsx", "JURNAL-KAS", "JURNAL KAS", COLUMNS.ledger, (req) => {
     const f = filterSql(req.query, { date: "tanggal", allowed: ["search"] });
     return db.query(`select * from v_cash_ledger ${f.sql} order by tanggal, id`, f.params);
@@ -182,7 +204,7 @@ export default function reportRoutes(db) {
   exportRoute("posisi.xlsx", "POSISI-PER-FASE", "POSISI PER FASE", COLUMNS.posisi, async (req) => {
     const f = filterSql(req.query, { allowed: ["customer_id", "scheme", "side", "phase", "status"] });
     return (await db.query(`select * from v_job_phase_position ${f.sql} order by job_date, job_id, side desc, ${PHASE_ORDER}`, f.params))
-      .map((x) => ({ ...x, side_label: x.side === "SALE" ? "Customer (piutang)" : "Vendor (utang)", phase_label: PHASE_NAMES[x.phase] }));
+      .map((x) => ({ ...x, side_label: x.side === "SALE" ? "Customer (piutang)" : "Vendor (utang)", phase_label: PHASE_NAMES[x.phase], scheme_label: SCHEME_NAMES[x.scheme] }));
   });
   exportRoute("kurang-transfer.xlsx", "KURANG-TRANSFER", "KURANG TRANSFER", COLUMNS.kurang, async () =>
     (await db.query("select * from v_kurang_transfer order by side desc, job_date, job_id"))

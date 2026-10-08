@@ -3,6 +3,8 @@
 //   npm run import:jobreg -- "C:\path\JOB REGISTRATION.xlsx" --mulai AMC/2607/0001
 //   ... --reset          -> kosongkan data bisnis v2 dulu (user & pengaturan tetap)
 //   ... --data-dir=...   -> database tertanam lain (default data/pg, yang dipakai npm start)
+//   ... --perbandingan   -> hanya simpan angka Excel untuk halaman Selisih (Excel vs ERP), transaksi tidak diubah.
+//                           Bisa juga lewat tombol "Unggah JOB REG" di halaman Selisih tanpa mematikan server.
 //
 // Laporan (RINGKASAN, PERLU DICEK, KURANG TRANSFER) ditulis ke data/laporan-jobreg-*.xlsx.
 import fs from "node:fs";
@@ -10,7 +12,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { openDb } from "../lib/db.js";
 import { migrate } from "../lib/migrate.js";
-import { importJobReg, writeJobRegReport } from "../lib/import-jobreg.js";
+import { importJobReg, writeJobRegReport, saveJobRegSnapshot } from "../lib/import-jobreg.js";
 import { CONFIG, ROOT } from "../config.js";
 
 const args = process.argv.slice(2);
@@ -32,6 +34,12 @@ const target = await openDb();
 await migrate(target, { log: () => {} });
 console.log(`Tujuan: ${CONFIG.databaseUrl ? "PostgreSQL (DATABASE_URL)" : CONFIG.dataDir}`);
 try {
+  if (args.includes("--perbandingan")) {
+    const info = await saveJobRegSnapshot({ file, target });
+    console.log(`Angka Excel disimpan untuk ${info.jobs} job. Buka halaman Selisih untuk melihat Excel vs ERP.`);
+    await target.close();
+    process.exit(0);
+  }
   const t0 = Date.now();
   const result = await importJobReg({ file, target, start, reset });
   console.log(`Waktu: ${((Date.now() - t0) / 1000).toFixed(1)} detik, catatan perlu dicek: ${result.issues.length}`);

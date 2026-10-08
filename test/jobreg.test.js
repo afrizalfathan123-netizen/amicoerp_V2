@@ -6,7 +6,7 @@ import path from "node:path";
 import ExcelJS from "exceljs";
 import { openDb } from "../lib/db.js";
 import { migrate } from "../lib/migrate.js";
-import { importJobReg, writeJobRegReport } from "../lib/import-jobreg.js";
+import { importJobReg, writeJobRegReport, compareJobReg, saveJobRegSnapshot } from "../lib/import-jobreg.js";
 import { checkMove } from "../routes/finance.js";
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jobreg-"));
@@ -35,6 +35,9 @@ sheet("FINANCE", 12,
     // skema 100% (dari UTANG PIUTANG), customer belum bayar, tanggal vendor kosong
     [D("2026-09-17"), "AMC/2609/0424", "DO3", "FORTIS", "JAT", "DC JAGAKARSA", "CDDE", "B 9444 JZN", 400000, null, 500000, 500000,
      null, null, 400000, null, null, null, 500000, D("2026-09-20")],
+    // vendor dibayar 50.000 lebih dari cost (CALO kosong) -> selisih tanpa tujuan, cost job tetap 2.100.000
+    [D("2026-09-02"), "AMC/2609/0010", "DO4", "GARBANTARA", "SOC", "CKP", "CDDL", "B 1 X", 2100000, null, 2500000, 2477500,
+     null, null, 1470000, D("2026-09-03"), 680000, D("2026-09-08"), 1750000, D("2026-09-04"), 727500, D("2026-09-10")],
     // job baru, belum ada nominal & belum di UTANG PIUTANG -> skema terbanyak customer (FORTIS = 100%)
     [D("2026-10-05"), "AMC/2610/0182", null, "FORTIS", "JAT", "DC TANAH ABANG", "RIT 1", "B 9907 FXX"],
   ]);
@@ -58,6 +61,7 @@ sheet("UTANG PIUTANG", 7,
     upRow({ 1: "AMC/2607/0001", 8: 1540000, 10: 710000, 12: 8, 21: 1750000, 24: 727500 }),
     upRow({ 1: "AMC/2698/0172", 8: 1400000, 10: 550000, 21: 2100000, 24: 900000 }),
     upRow({ 1: "AMC/2609/0424", 5: 0, 6: 400000, 12: 14, 17: 500000 }),
+    upRow({ 1: "AMC/2609/0010", 8: 1470000, 10: 680000, 21: 1750000, 24: 727500 }),
     upRow({ 1: "AMC/2610/0182", 12: 14 }),   // baris kosong untuk job baru
   ]);
 await wb.xlsx.writeFile(file);
@@ -74,7 +78,7 @@ const has = (masalah, job) => result.issues.some((i) => i.masalah.startsWith(mas
 
 await step("job sebelum nomor mulai dilewati, sisanya diimpor", async () => {
   assert.equal(result.stats.skippedBeforeStart, 1);
-  assert.equal(result.stats.jobs, 4);
+  assert.equal(result.stats.jobs, 5);
   assert.equal((await one("select count(*)::int n from job where job_number = 'AMC/2606/0100'")).n, 0);
 });
 
@@ -99,7 +103,8 @@ await step("job & perjalanan: rute PP, plat dirapikan, gate (hari/bulan tertukar
   const f = await one("select * from job where job_number = 'AMC/2609/0424'");
   assert.equal(f.rit_number, 6);
   assert.equal(f.delivery_scope, "INNERCITY");
-  assert.equal(f.payment_scheme, "FULL");
+  assert.equal(f.customer_scheme, "FULL");
+  assert.equal(f.vendor_scheme, "FULL");
 });
 
 await step("pajak customer: GSL & FORTIS tanpa pajak, lainnya PPh 2% + PPN 1,1%", async () => {
@@ -113,9 +118,9 @@ await step("pelunasan vendor berisi calo -> dokumen terpisah fase Calo / biaya l
     `select m.number, m.phase, m.approval_state, s.amount_total, s.amount_paid from account_move m join v_move_status s on s.move_id = m.id
      where m.number like 'JR/V%/AMC/2607/0001' order by m.number`);
   assert.deepEqual(moves.map((m) => [m.number, m.phase, m.amount_total, m.amount_paid]), [
-    ["JR/V30/AMC/2607/0001", "SETTLEMENT_30", 660000, 660000],
+    ["JR/V30/AMC/2607/0001", "SETTLEMENT", 660000, 660000],
     ["JR/V30L/AMC/2607/0001", "OTHER", 50000, 50000],
-    ["JR/V70/AMC/2607/0001", "DP_70", 1540000, 1540000],
+    ["JR/V70/AMC/2607/0001", "DP", 1540000, 1540000],
   ]);
   assert.ok(moves.every((m) => m.approval_state === "APPROVED"));
 });
@@ -143,16 +148,45 @@ await step("skema 100%: dibayar dari UTANG PIUTANG, tanggal kosong pakai tanggal
 });
 
 await step("skema job yang belum terbaca ikut skema terbanyak customer", async () => {
-  assert.equal((await one("select payment_scheme from job where job_number = 'AMC/2610/0182'")).payment_scheme, "FULL");
+  assert.equal((await one("select customer_scheme from job where job_number = 'AMC/2610/0182'")).customer_scheme, "FULL");
   assert.equal(result.stats.schemeFromCustomer, 1);
 });
 
+await step("lebih bayar vendor -> selisih tanpa tujuan, cost job tetap sesuai Excel", async () => {
+  const b = await one("select * from v_job_balance where job_number = 'AMC/2609/0010'");
+  assert.deepEqual([b.cost, b.requested, b.paid], [2100000, 2100000, 2100000]);
+  const u = await db.query("select number, amount, paid, status, selisih_kas from v_unassigned where job_number = 'AMC/2609/0010'");
+  assert.deepEqual(u, [{ number: "JR/V30/AMC/2609/0010", amount: 50000, paid: 50000, status: "OPEN", selisih_kas: -50000 }]);
+  assert.equal(result.stats.unassignedLines, 1);
+  assert.equal((await one("select count(*)::int n from job_line jl join product p on p.id = jl.product_id where p.kind = 'SELISIH'")).n, 0);
+  assert.ok(has("Pengajuan melebihi cost + calo", "AMC/2609/0010"));
+});
+
+await step("angka Excel disimpan; Excel vs ERP per kolom + penyebab beda", async () => {
+  let c = await compareJobReg(db);
+  assert.equal(c.info.jobs, 5);
+  const col = (label) => c.columns.find((x) => x.label === label);
+  const u30 = col("UTANG 30% BELUM BAYAR");
+  assert.deepEqual([u30.excel, u30.erp], [0, 50000]);
+  assert.deepEqual(u30.jobs.map((j) => [j.job_number, j.sebab.split(":")[0]]), [["AMC/2608/0172", "Kurang transfer"]]);
+  const u30t = col("UTANG 30% TERBAYAR");
+  assert.deepEqual(u30t.jobs.map((j) => [j.job_number, j.excel, j.erp, j.sebab.split(":")[0]]), [["AMC/2609/0010", 680000, 630000, "Vendor dibayar di atas cost"]]);
+  assert.equal(col("PIUTANG 70% TERBAYAR").beda, 0);
+  assert.equal(c.perJob[(await one("select id from job where job_number = 'AMC/2608/0172'")).id].sisa_vendor, 0);
+  // unggah ulang file (buffer) = ganti salinan, transaksi tidak berubah
+  const before = await one("select count(*)::int n from account_payment");
+  const info = await saveJobRegSnapshot({ file: fs.readFileSync(file), name: "ulang.xlsx", target: db });
+  assert.deepEqual([info.jobs, info.file, (await one("select count(*)::int n from account_payment")).n], [5, "ulang.xlsx", before.n]);
+});
+
 await step("kurang transfer vendor 70/30 terdeteksi", async () => {
-  const k = await db.query("select job_number, side, kurang from v_kurang_transfer");
-  assert.deepEqual(k, [{ job_number: "AMC/2608/0172", side: "PURCHASE", kurang: 50000 }]);
+  const k = await db.query("select job_number, side, kurang, selisih_kas from v_kurang_transfer");
+  assert.deepEqual(k, [{ job_number: "AMC/2608/0172", side: "PURCHASE", kurang: 50000, selisih_kas: 50000 }]);   // belum ditransfer = surplus
 });
 
 await step("semua dokumen lolos aturan dokumen v2", async () => {
+  // data lama: sebagian job tidak punya kode tugas / gate out; aturan itu hanya untuk dokumen baru
+  await db.query("update app_setting set value = 'false' where key = 'require_gate_for_billing'");
   for (const m of await db.query("select id from account_move")) await checkMove(db, m.id);
 });
 
@@ -162,7 +196,7 @@ await step("nomor job baru melanjutkan nomor impor", async () => {
 });
 
 await step("impor kedua ditolak kalau database sudah berisi job", async () => {
-  await assert.rejects(importJobReg({ file, target: db, log: () => {} }), /sudah berisi 4 job/);
+  await assert.rejects(importJobReg({ file, target: db, log: () => {} }), /sudah berisi 5 job/);
 });
 
 await step("laporan Excel ditulis", async () => {

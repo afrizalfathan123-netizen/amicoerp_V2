@@ -4,7 +4,8 @@ import { api, get, view, esc, jam, enumOptions, table, toast, openModal, ROLE_LA
 export async function renderUsers() {
   const [users, audit] = await Promise.all([get("/users"), get("/audit")]);
   view().innerHTML = `
-    <div class="page-head"><h1>User & Audit</h1><div class="spacer"></div><div class="actions"><button class="primary" id="addUser">+ User baru</button></div></div>
+    <div class="page-head"><h1>User & Audit</h1><div class="spacer"></div><div class="actions"><a class="btn" href="/api/export/semua.xlsx" title="Daftar tabel, kolom, dan isi semua tabel dalam satu file Excel">Export semua data (Excel)</a>
+      <button class="primary" id="addUser">+ User baru</button></div></div>
     <div class="note-box">ADMIN: semua + persetujuan pengajuan + user. FINANCE: keuangan & master harga. OPERATIONAL: job, perjalanan, kendaraan (keuangan hanya lihat). VIEWER: hanya lihat.</div>
     <div class="panel"><h2>User</h2>
       ${table("<th>Username</th><th>Nama</th><th>Role</th><th>Email</th><th>Aktif</th><th>Login terakhir</th>",

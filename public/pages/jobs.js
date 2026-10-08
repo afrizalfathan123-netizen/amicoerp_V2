@@ -2,14 +2,14 @@
 import {
   state, api, get, view, esc, rp, tgl, jam, kv, tile, badge, options, enumOptions, table, toast, openModal, askReason,
   action, customers, vendors, partnerBanksOf, locLabel, num, today, debounce, bindRows, canJob, canFinance,
-  KIND_LABEL, PHASE_LABEL, SELLING_MODES, dtLocal, fromDtLocal, loadMaster,
+  KIND_LABEL, PHASE_LABEL, phaseLabel, SELLING_MODES, STAGE_LABEL, stageBadge, SJ_STATUS_LABEL, SJ_LATE_LABEL, BILL_LABEL, isAdmin, SCHEME_LABEL, SCHEME_SHORT, dtLocal, fromDtLocal, loadMaster,
 } from "../lib.js";
 import { gateModal, positionModal } from "./tracker.js";
 import { ledgerTable, shortPanel } from "./reports.js";
+import { unassignedTable } from "./unassigned.js";
 
 const SCOPE = { INTERCITY: "Antar kota", INNERCITY: "Dalam kota" };
 const TRIP = { ONE_WAY: "One way", ROUND_TRIP: "PP / round trip" };
-const SCHEME = { "70_30": "DP 70% + pelunasan 30%", FULL: "Langsung 100%" };
 
 function shortBadge(j) {
   const parts = [];
@@ -22,11 +22,15 @@ export async function renderJobs() {
   const f = JSON.parse(sessionStorage.getItem("jobFilter") || "{}");
   view().innerHTML = `
     <div class="page-head"><h1>Job</h1><div class="spacer"></div>
-      <div class="actions">${canJob() ? `<button class="primary" id="newJob">+ Job baru</button>` : ""}</div></div>
+      <div class="actions"><a class="btn" id="exportJobs">Export Excel</a>
+        ${isAdmin() ? `<label class="btn" style="flex-direction:row" title="Lengkapi job dari export Job List ERP AMICO v1 (driver, gate, SJ, vendor, rekening) dan tambah job yang belum ada">Impor Job List v1<input type="file" id="importV1" accept=".xlsx" hidden></label>` : ""}
+        ${canJob() ? `<button class="primary" id="newJob">+ Job baru</button>` : ""}</div></div>
+    <div class="tiles" id="stageTiles"></div>
     <div class="panel">
       <div class="filters">
         <label>Cari<input id="jSearch" placeholder="No job, plat, DO, customer, driver" value="${esc(f.search || "")}"></label>
-        <label>Status<select id="jState"><option value="">Semua</option>${enumOptions({ confirmed: "Berjalan", done: "Selesai", cancelled: "Dibatalkan", kurang_transfer: "Kurang transfer" }, f.state)}</select></label>
+        <label>Status<select id="jStage"><option value="">Semua</option>${enumOptions(STAGE_LABEL, f.stage)}</select></label>
+        <label>Lainnya<select id="jState"><option value="">-</option>${enumOptions({ kurang_transfer: "Kurang transfer", cancelled: "Dibatalkan" }, f.state)}</select></label>
         <label>Lingkup<select id="jScope"><option value="">Semua</option>${enumOptions(SCOPE, f.scope)}</select></label>
         <label>Dari<input type="date" id="jFrom" value="${esc(f.from || "")}"></label>
         <label>Sampai<input type="date" id="jTo" value="${esc(f.to || "")}"></label>
@@ -36,7 +40,7 @@ export async function renderJobs() {
   document.getElementById("newJob")?.addEventListener("click", () => jobForm());
   const el = (id) => document.getElementById(id);
   const load = async () => {
-    const flt = { search: el("jSearch").value, state: el("jState").value, scope: el("jScope").value, from: el("jFrom").value, to: el("jTo").value };
+    const flt = { search: el("jSearch").value, stage: el("jStage").value, state: el("jState").value, scope: el("jScope").value, from: el("jFrom").value, to: el("jTo").value };
     sessionStorage.setItem("jobFilter", JSON.stringify(flt));
     const rows = await get(`/jobs?${new URLSearchParams(flt)}`);
     el("jobTable").innerHTML = table(
@@ -47,21 +51,76 @@ export async function renderJobs() {
         <td>${esc(j.pol)} - ${esc(j.pod)}${j.trip_type === "ROUND_TRIP" ? " PP" : ""}${j.delivery_scope === "INNERCITY" ? `<br><span class="muted">dalam kota${j.rit_number ? ` rit ${j.rit_number}` : ""}</span>` : ""}</td>
         <td>${esc(j.truck_type)}<br><span class="muted">${esc(j.plate_number || "")}</span></td>
         <td>${esc(j.driver1_name || "")}</td>
-        <td>${j.payment_scheme === "FULL" ? "100%" : "70/30"}</td>
+        <td>${SCHEME_SHORT[j.customer_scheme]}${j.vendor_scheme !== j.customer_scheme ? `<br><span class="muted">vendor ${SCHEME_SHORT[j.vendor_scheme]}</span>` : ""}</td>
         <td class="num">${rp(j.selling)}</td><td class="num">${rp(j.cost)}</td>
         <td class="num">${rp(j.selling - j.received)}</td><td class="num">${rp(j.cost - j.paid)}</td>
-        <td>${badge(j.state)}${shortBadge(j)}</td></tr>`).join(""),
+        <td>${stageBadge(j.stage)}${j.sj_late ? `<br><span class="badge warn" title="${esc(SJ_LATE_LABEL[j.sj_late])}">SJ terlambat</span>` : ""}${shortBadge(j)}</td></tr>`).join(""),
       "Belum ada job") + (rows.length >= 300 ? `<div class="note-box">Ditampilkan 300 job terbaru. Persempit dengan filter.</div>` : "");
     bindRows(el("jobTable"));
   };
   el("jSearch").oninput = debounce(load);
-  for (const k of ["jState", "jScope", "jFrom", "jTo"]) el(k).onchange = load;
+  for (const k of ["jStage", "jState", "jScope", "jFrom", "jTo"]) el(k).onchange = load;
+  el("exportJobs").onclick = () => {
+    const q = new URLSearchParams(Object.fromEntries(Object.entries({ stage: el("jStage").value, from: el("jFrom").value, to: el("jTo").value }).filter(([, v]) => v)));
+    location.href = `/api/export/job-list.xlsx?${q}`;
+  };
+  el("importV1")?.addEventListener("change", (e) => importV1Modal(e.target.files[0], load));
+  // ringkasan per status, klik untuk memfilter
+  const sum = await get("/sj/summary");
+  el("stageTiles").innerHTML = ["RENCANA", "JALAN", "MENUNGGU_SJ", "SIAP_TAGIH", "KIRIM_SJ", "MENUNGGU_BAYAR", "SELESAI"].map((s) =>
+    `<a href="#" class="tile" data-stage="${s}"><div class="label">${esc(STAGE_LABEL[s])}</div><div class="value">${rp(sum.stages[s] || 0)}</div></a>`).join("");
+  el("stageTiles").querySelectorAll("[data-stage]").forEach((a) => (a.onclick = (e) => {
+    e.preventDefault();
+    el("jStage").value = el("jStage").value === a.dataset.stage ? "" : a.dataset.stage;
+    load();
+  }));
   await load();
+}
+
+// Impor export Job List v1: pratinjau dulu, lalu simpan
+function importV1Modal(file, reload) {
+  if (!file) return;
+  const send = async (params) => {
+    const res = await fetch(`/api/import/joblist-v1?${new URLSearchParams({ name: file.name, ...params })}`,
+      { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Gagal");
+    return data;
+  };
+  const show = (r) => {
+    const s = r.stats;
+    return `<div class="kv">
+      ${kv("Baris di file v1", rp(r.rows))}${kv("Job dilengkapi", rp(s.jobs_updated))}${kv("Kolom diisi", rp(s.fields_filled))}
+      ${kv("Job baru (harga 0)", rp(s.new_jobs))}${kv("Vendor baru", rp(s.vendors_created))}${kv("Rekening baru", rp(s.banks))}
+      ${kv("Job yang vendornya diisi", rp(s.vendor_set))}${kv("Isian buatan v1 diabaikan", rp(s.fake_skipped))}${kv("Beda v1 vs v2 (tidak ditimpa)", rp(s.conflicts))}${kv("Perlu dicek", rp(r.issues))}
+    </div>
+    <div class="note-box">Uang (invoice, pengajuan, pembayaran) tidak diubah. Kolom v2 yang kosong diisi dari v1; yang beda dibiarkan dan dicatat.
+      <a href="/api/import/reports/${encodeURIComponent(r.report)}">Unduh laporan lengkap</a></div>`;
+  };
+  openModal({
+    title: `Impor Job List v1: ${file.name}`, wide: true, submitLabel: "Simpan impor",
+    body: `<div id="v1Box"><p class="muted">Membaca file dan membuat pratinjau...</p></div>
+      <label class="check"><input type="checkbox" name="timpa"> Timpa juga kolom yang beda dengan nilai v1 (gate, plat, jenis truk, SJ)</label>`,
+    onOpen: async () => {
+      try { document.getElementById("v1Box").innerHTML = `<h4>Pratinjau (belum disimpan)</h4>${show(await send({ pratinjau: "1" }))}`; }
+      catch (err) { document.getElementById("v1Box").innerHTML = `<div class="modal-error">${esc(err.message)}</div>`; }
+    },
+    onSubmit: async (d) => {
+      const r = await send(d.timpa ? { timpa: "1" } : {});
+      document.getElementById("v1Box").innerHTML = `<h4>Tersimpan</h4>${show(r)}`;
+      toast("Impor Job List v1 selesai");
+      reload();
+      return true;
+    },
+  });
 }
 
 export function jobForm(job = null, balance = null) {
   const j = job || { job_date: today(), trip_type: "ONE_WAY", truck_type: "CDDL", delivery_scope: "INTERCITY", service_type: "TRUCKING", selling_mode: "PRICE_BOOK" };
   const locked = balance && (balance.invoiced > 0 || balance.requested > 0);
+  const lockCust = balance && balance.invoiced > 0;
+  const lockVend = balance && balance.requested > 0;
+  const VENDOR_SCHEME = { "70_30": SCHEME_LABEL["70_30"], FULL: SCHEME_LABEL.FULL };
   const c = state.cache;
   const purchase = job?.lines?.find((l) => l.side === "PURCHASE" && l.kind === "TRUCKING");
   openModal({
@@ -85,6 +144,9 @@ export function jobForm(job = null, balance = null) {
         <label>Jenis truk<input name="truck_type" list="truckTypes" value="${esc(j.truck_type)}" required></label>
         <label>Vendor trucking<select name="vendor_id">${options(vendors(), j.vendor_id, undefined, "- belum ditentukan -")}</select></label>
         <label>Rekening vendor<select name="vendor_bank_id"></select></label>
+        <label>atau rekening baru: bank<input name="new_bank_name" placeholder="BCA"></label>
+        <label>No rekening<input name="new_account_number"></label>
+        <label>Atas nama<input name="new_holder" placeholder="boleh beda dengan vendor"></label>
         <label>Driver 1<input name="driver1_name" value="${esc(j.driver1_name || "")}"></label>
         <label>HP driver 1<input name="driver1_phone" value="${esc(j.driver1_phone || "")}"></label>
         <label>Driver 2<input name="driver2_name" value="${esc(j.driver2_name || "")}"></label>
@@ -93,7 +155,8 @@ export function jobForm(job = null, balance = null) {
       <h4>Harga</h4>
       <div class="form-grid">
         <div class="wide price-info" id="priceInfo">Pilih customer, rute, truk, dan trip untuk melihat price book.</div>
-        <label>Skema bayar<select name="payment_scheme" ${locked ? "disabled" : ""}>${enumOptions(SCHEME, j.payment_scheme || "70_30")}</select></label>
+        <label>Skema bayar customer<select name="customer_scheme" ${lockCust ? "disabled" : ""}>${enumOptions(SCHEME_LABEL, j.customer_scheme || "70_30")}</select></label>
+        <label>Skema bayar vendor<select name="vendor_scheme" ${lockVend ? "disabled" : ""}>${enumOptions(VENDOR_SCHEME, j.vendor_scheme || "70_30")}</select></label>
         <label>Selling<select name="selling_mode">${enumOptions(SELLING_MODES, j.selling_mode)}</select></label>
         <label>Nominal selling<input class="num" name="selling" value="${balance ? (job.lines.find((l) => l.side === "SALE" && l.kind === "TRUCKING")?.amount ?? "") : ""}"></label>
         <label>Cost truk<input class="num" name="cost" value="${purchase?.amount ?? ""}" placeholder="Kosong = dari price book"></label>
@@ -102,7 +165,13 @@ export function jobForm(job = null, balance = null) {
       </div>
       <datalist id="truckTypes">${[...new Set(c.pricelist.map((p) => p.truck_type).concat(c.vehicles.map((v) => v.truck_type), ["CDD", "CDDL", "FUSO", "TRONTON", "WINGBOX"]))].map((t) => `<option value="${esc(t)}">`).join("")}</datalist>
       <datalist id="plates">${c.vehicles.filter((v) => v.active).map((v) => `<option value="${esc(v.plate_number)}">${esc(v.truck_type)}</option>`).join("")}</datalist>
-      ${locked ? `<div class="note-box">Customer dan skema bayar terkunci karena job ini sudah punya invoice / pengajuan. Harga tidak bisa diturunkan di bawah yang sudah ditagih / diajukan.</div>` : ""}`,
+      ${locked ? `<div class="note-box">Customer dan skema bayar sisi yang sudah ditagih / diajukan terkunci. Harga tidak bisa diturunkan di bawah yang sudah ditagih / diajukan.</div>
+        <div class="form-grid" id="rerouteBox" hidden>
+          <div class="wide note-box warn-box">Reroute: rute / truk berubah setelah ada pengajuan / invoice. Pengajuan lama <b>tidak dibalik</b>.
+            Cost & selling diambil dari price book rute baru (kosongkan = price book, atau isi manual). Selisihnya diajukan sebagai
+            <b>DP tambahan</b> (sampai 70% cost baru) dan sisanya di pelunasan.</div>
+          <label class="wide">Alasan reroute (wajib)<input name="reason" placeholder="contoh: reroute permintaan gudang JST - SOC ke JST - MDN"></label>
+        </div>` : ""}`,
     onOpen: (form) => {
       let price = null;
       const E = form.elements;
@@ -138,17 +207,36 @@ export function jobForm(job = null, balance = null) {
           lookup();
         }
       });
-      E.delivery_scope.addEventListener("change", () => { if (!locked) E.payment_scheme.value = E.delivery_scope.value === "INNERCITY" ? "FULL" : "70_30"; });
+      // skema default: setting partner, kalau kosong dalam kota 100% / antar kota 70/30
+      const partnerScheme = (id) => state.cache.partners.find((p) => p.id === Number(id))?.payment_scheme || null;
+      const scopeScheme = () => (E.delivery_scope.value === "INNERCITY" ? "FULL" : "70_30");
+      const applySchemes = () => {
+        if (!lockCust) E.customer_scheme.value = partnerScheme(E.customer_id.value) || scopeScheme();
+        const v = partnerScheme(E.vendor_id.value);
+        if (!lockVend) E.vendor_scheme.value = v === "FULL" || v === "70_30" ? v : scopeScheme();
+      };
+      for (const n of ["delivery_scope", "customer_id", "vendor_id"]) E[n].addEventListener("change", applySchemes);
       E.vendor_id.addEventListener("change", fillBanks);
       E.selling_mode.onchange = applyMode;
       for (const n of ["customer_id", "pol_id", "pod_id", "truck_type", "trip_type", "job_date"]) E[n].addEventListener("change", lookup);
+      // job lama ganti rute: cost lama dikosongkan supaya ikut price book rute baru, alasan wajib kalau sudah ada dokumen
+      if (job) for (const n of ["pol_id", "pod_id", "truck_type", "trip_type"]) E[n].addEventListener("change", () => {
+        const moved = ["pol_id", "pod_id", "truck_type", "trip_type"].some((k) => String(E[k].value) !== String(job[k] ?? ""));
+        if (moved) E.cost.value = "";
+        const box = document.getElementById("rerouteBox");
+        if (box) { box.hidden = !moved; E.reason.required = moved; }
+      });
       fillBanks();
       lookup();
     },
     onSubmit: async (d) => {
       for (const k of ["selling", "cost", "selling_after_tax"]) d[k] = num(d[k]);
-      if (locked) { delete d.customer_id; delete d.payment_scheme; }
-      if (job && !d.cost && purchase) d.cost = purchase.amount;
+      if (lockCust) { delete d.customer_id; delete d.customer_scheme; }
+      if (lockVend) delete d.vendor_scheme;
+      // cost dikosongkan saat ganti rute = ambil dari price book rute baru
+      const rerouted = job && ["pol_id", "pod_id", "trip_type", "truck_type"].some((k) => String(d[k] ?? "") !== String(job[k] ?? ""));
+      if (job && !d.cost && purchase && !rerouted) d.cost = purchase.amount;
+      if (!d.reason) delete d.reason;
       if (job) {
         await api("PUT", `/jobs/${job.id}`, d);
         toast("Job disimpan");
@@ -171,7 +259,7 @@ export async function renderJobDetail(id) {
   view().innerHTML = `
     <div class="page-head">
       <a href="#/jobs" class="btn">&larr;</a>
-      <h1>${esc(j.job_number)}</h1>${badge(j.state)}
+      <h1>${esc(j.job_number)}</h1>${stageBadge(d.status?.stage)}
       <span class="sub">${esc(j.customer)} &middot; ${esc(j.pol)} - ${esc(j.pod)}${j.trip_type === "ROUND_TRIP" ? " PP" : ""} &middot; ${esc(j.plate_number || "")}</span>
       <div class="spacer"></div>
       <div class="actions">${canJob() && j.state !== "cancelled" ? `
@@ -181,6 +269,13 @@ export async function renderJobDetail(id) {
         <button class="danger" id="cancelJob">Batalkan job</button>` : ""}
       </div>
     </div>
+    ${d.status ? `<div class="steps">${[
+      ["Trip", { BELUM_BERANGKAT: "Belum berangkat", JALAN: "Dalam perjalanan", SAMPAI: "Sampai (gate in)" }[d.status.trip_status], d.status.trip_status === "SAMPAI"],
+      ["Surat jalan", d.status.sj_status ? SJ_STATUS_LABEL[d.status.sj_status] : "Tidak dilacak", !d.status.sj_status || d.status.sj_status === "DIKIRIM"],
+      ["Tagihan customer", BILL_LABEL[d.status.customer_status], ["LUNAS", "TANPA_TAGIHAN"].includes(d.status.customer_status)],
+      ["Pembayaran vendor", BILL_LABEL[d.status.vendor_status], ["LUNAS", "TANPA_TAGIHAN"].includes(d.status.vendor_status)],
+    ].map(([k, v, ok]) => `<div class="step ${ok ? "ok" : ""}"><span>${esc(k)}</span><b>${esc(v || "-")}</b></div>`).join("")}</div>
+    ${d.status.sj_late ? `<div class="note-box warn-box">SJ terlambat: ${esc(SJ_LATE_LABEL[d.status.sj_late])}. Cek ke driver / kurir.</div>` : ""}` : ""}
     ${shortPanel(d.kurang_transfer)}
     <div class="tiles">
       ${tile("Selling", b.selling)}${tile("Cost (truk + biaya)", b.cost)}${tile("Margin rencana", b.selling - b.cost)}
@@ -193,13 +288,19 @@ export async function renderJobDetail(id) {
         ${kv("Tanggal", tgl(j.job_date))}${kv("Customer", j.customer)}${kv("Vendor", j.vendor)}
         ${kv("Rute", `${j.pol_name} - ${j.pod_name}${j.trip_type === "ROUND_TRIP" ? " (PP)" : ""}`)}
         ${kv("Lingkup", `${SCOPE[j.delivery_scope]}${j.rit_number ? `, rit ${j.rit_number}` : ""}`)}
-        ${kv("Skema bayar", SCHEME[j.payment_scheme])}${kv("Truk", j.truck_type)}${kv("Plat", j.plate_number)}
+        ${kv("Skema customer", SCHEME_LABEL[j.customer_scheme])}${kv("Skema vendor", SCHEME_LABEL[j.vendor_scheme])}${kv("Truk", j.truck_type)}${kv("Plat", j.plate_number)}
         ${kv("Driver", [j.driver1_name, j.driver1_phone].filter(Boolean).join(" / "))}${kv("Driver 2", [j.driver2_name, j.driver2_phone].filter(Boolean).join(" / "))}
         ${kv("DO", j.do_number)}${kv("Selling", SELLING_MODES[j.selling_mode])}
         ${kv("Pajak customer", j.pph_pct || j.ppn_pct ? `PPh ${j.pph_pct}% / PPN ${j.ppn_pct}%` : "Tanpa pajak")}
         ${kv("Selling setelah pajak", j.selling_after_tax != null ? `${rp(j.selling_after_tax)} (manual)` : "Dihitung dari pajak customer")}
         ${kv("Catatan", j.note)}
       </div></div>
+      ${d.reroutes.length ? `<div class="panel wide-panel"><h2>Riwayat reroute</h2>${table(
+        "<th>Waktu</th><th>Dari</th><th>Ke</th><th class='num'>Cost</th><th class='num'>Selling</th><th>Alasan</th><th>Oleh</th>",
+        d.reroutes.map((r) => { const x = r.detail || {}; return `<tr><td class="nowrap">${jam(r.at)}</td><td>${esc(x.dari)}${x.truk_dari !== x.truk_ke ? ` · ${esc(x.truk_dari)}` : ""}</td>
+          <td><b>${esc(x.ke)}</b>${x.truk_dari !== x.truk_ke ? ` · ${esc(x.truk_ke)}` : ""}</td>
+          <td class="num">${rp(x.cost_dari)} &rarr; <b>${rp(x.cost_ke)}</b></td><td class="num">${rp(x.selling_dari)} &rarr; <b>${rp(x.selling_ke)}</b></td>
+          <td>${esc(x.alasan || "-")}</td><td>${esc(r.by_name || "")}</td></tr>`; }).join(""))}</div>` : ""}
       <div class="panel"><h2>Perjalanan & SJ <div class="spacer"></div>${canJob() ? `
         ${!j.gate_out_at ? `<button class="small" id="gateOut">Gate out</button>` : ""}
         ${j.gate_out_at && !j.gate_in_at ? `<button class="small" id="pos">Update posisi</button> <button class="small" id="gateIn">Gate in</button>` : ""}
@@ -208,6 +309,9 @@ export async function renderJobDetail(id) {
           ${kv("Gate out", jam(j.gate_out_at))}${kv("Gate in", jam(j.gate_in_at))}
           ${kv("SJ", j.sj_number)}${kv("Resi SJ diterima", tgl(j.sj_resi_received_at))}${kv("SJ diterima", tgl(j.sj_received_at))}
           ${kv("No resi SJ", j.sj_resi_number)}${kv("SJ dikirim ke customer", tgl(j.sj_delivered_at))}${kv("Resi kirim SJ", j.sj_delivered_resi_number)}
+          ${kv("Lead time SJ (gate in - diterima)", d.status?.lead_time_sj != null ? `${d.status.lead_time_sj} hari` : "")}
+          ${kv("Lama di kurir", d.status?.hari_di_kurir != null ? `${d.status.hari_di_kurir} hari` : "")}
+          ${kv("Pengiriman SJ", d.sj_deliveries.map((x) => `${x.number}${x.state === "cancelled" ? " (batal)" : x.state === "received" ? " (diterima)" : ""}`).join(", "))}
         </div>
         ${d.trip_updates.length ? `<h4>Posisi</h4>${table("<th>Waktu</th><th>Posisi</th><th>Catatan</th><th>Oleh</th>",
           d.trip_updates.map((u) => `<tr><td>${jam(u.at)}</td><td>${esc(u.location)}</td><td>${esc(u.note || "")}</td><td>${esc(u.by_name || "")}</td></tr>`).join(""))}` : ""}
@@ -215,7 +319,7 @@ export async function renderJobDetail(id) {
     </div>
     <div class="panel"><h2>Posisi per fase <span class="hint">rencana, sudah ditagih / diajukan, dan dibayar</span></h2>
       ${table(`<th>Sisi</th><th>Fase</th><th class="num">Rencana</th><th class="num">Belum ditagih / diajukan</th><th class="num">Ditagih / diajukan, belum dibayar</th><th class="num">Dibayar</th>`,
-        [...sale, ...purch].map((p) => `<tr><td>${p.side === "SALE" ? "Customer" : "Vendor"}</td><td>${esc(PHASE_LABEL[p.phase])}</td>
+        [...sale, ...purch].map((p) => `<tr><td>${p.side === "SALE" ? "Customer" : "Vendor"}</td><td>${esc(phaseLabel(p.phase, p.scheme))}</td>
           <td class="num">${rp(p.planned)}</td><td class="num">${rp(p.not_billed)}</td><td class="num">${rp(p.outstanding)}</td><td class="num">${rp(p.paid)}</td></tr>`).join(""))}
     </div>
     <div class="panel"><h2>Baris order <span class="hint">rencana uang job: selling, cost truk, calo, tol, parkir, dll</span>
@@ -230,12 +334,14 @@ export async function renderJobDetail(id) {
             ${l.billed === 0 && l.kind !== "TRUCKING" ? `<button class="small danger" data-del-line="${l.job_line_id}">Hapus</button>` : ""}` : ""}</td>
         </tr>`).join(""))}
     </div>
+    ${d.unassigned.length ? `<div class="panel warn-panel"><h2>Selisih tanpa tujuan <span class="hint">uang di dokumen job ini yang belum jelas untuk apa; tidak dihitung di selling / cost</span></h2>
+      <div id="unassignedBox"></div></div>` : ""}
     <div class="panel"><h2>Invoice & pengajuan</h2>
       ${table(`<th>Dokumen</th><th>Jenis</th><th>Fase</th><th>Tgl</th><th>Partner</th><th class="num">Nominal job ini</th><th>Status</th>`,
         d.moves.map((m) => `<tr class="click" data-href="#/moves/${m.id}">
           <td><b>${esc(m.number || "(draft)")}</b></td><td>${m.move_type === "out_invoice" ? "Invoice customer" : "Pengajuan vendor"}${m.payment_channel === "TRANSFER_MALAM" ? "<br><span class='muted'>transfer malam</span>" : ""}</td>
           <td>${esc(PHASE_LABEL[m.phase])}</td><td>${tgl(m.move_date)}</td><td>${esc(m.partner || "")}</td>
-          <td class="num">${m.cancelled_at ? `<s>${rp(m.amount)}</s>` : rp(m.amount)}</td><td>${badge(m.state)} ${badge(m.approval_state)}</td></tr>`).join(""), "Belum ada")}
+          <td class="num">${m.cancelled_at ? `<s>${rp(m.amount)}</s>` : rp(m.amount)}${m.tanpa_tujuan ? `<br><span class="badge warn">tanpa tujuan</span>` : ""}</td><td>${badge(m.state)} ${badge(m.approval_state)}</td></tr>`).join(""), "Belum ada")}
     </div>
     <div class="panel"><h2>Jurnal kas job ini <span class="hint">uang benar-benar masuk / keluar</span></h2>${ledgerTable(d.ledger, false)}</div>
     <div class="panel"><h2>Riwayat perubahan</h2>
@@ -244,6 +350,7 @@ export async function renderJobDetail(id) {
     </div>`;
   bindRows();
   const reload = () => window.dispatchEvent(new Event("hashchange"));
+  if (d.unassigned.length) unassignedTable(document.getElementById("unassignedBox"), d.unassigned, reload, { showJob: false });
   const on = (sel, fn) => document.getElementById(sel)?.addEventListener("click", fn);
   on("editJob", () => jobForm({ ...j, lines: d.lines }, { ...b, invoiced: b.invoiced, requested: b.requested }));
   on("doneJob", action(() => api("POST", `/jobs/${id}/state`, { state: "done" }), "Job selesai"));
