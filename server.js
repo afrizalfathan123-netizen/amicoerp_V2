@@ -18,6 +18,7 @@ import sjRoutes from "./routes/sj.js";
 export async function createApp(db) {
   const app = express();
   app.disable("x-powered-by");
+  app.set("trust proxy", 1);   // di belakang proxy HTTPS (Railway): req.secure benar, cookie diberi Secure
   app.use(express.json({ limit: "2mb" }));
   app.use(sessionMiddleware(db));
   app.use("/api", authRoutes(db));

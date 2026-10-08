@@ -19,6 +19,22 @@ Lokal tidak perlu install PostgreSQL: kalau `DATABASE_URL` kosong, dipakai Postg
 Untuk online (VPS Hostinger / database Supabase baru) isi `DATABASE_URL` di `.env` (lihat `.env.example`).
 Skema dibuat / diperbarui otomatis saat server jalan (`db/migrations/*.sql`).
 
+## Go live: Supabase (database) + Railway (server)
+
+1. Supabase: project baru (region Singapore). Matikan Data API (Project Settings > API) karena v2 tidak memakainya,
+   supaya tabel tidak bisa diakses lewat anon key. Ambil connection string **Session pooler**.
+2. Railway: deploy repo ini, region Singapore, 1 replica. Variables: `DATABASE_URL` (connection string di atas),
+   opsional `SESSION_DAYS`, `TZ=Asia/Jakarta`. `PORT` diisi Railway. Tanpa `DATABASE_URL` server menolak jalan di Railway.
+   Skema dibuat otomatis saat server jalan. SSL ke Supabase otomatis (`DATABASE_SSL=disable` untuk mematikan).
+3. Pindah data dari laptop (matikan `npm start` dulu, isi `DATABASE_URL` Supabase di `.env`):
+   ```bash
+   npm run pindah:postgres -- --pratinjau
+   npm run pindah:postgres
+   ```
+   Semua tabel disalin dalam satu transaksi (id tetap sama, penomoran melanjutkan), lalu jumlah baris dan total setiap
+   kolom angka dibandingkan; kalau ada yang beda, dibatalkan seluruhnya. Tujuan harus kosong; `--reset` mengosongkan
+   tujuan dulu (konfirmasi "PINDAH"). User ikut pindah dengan password yang sama, semua orang login ulang.
+
 ## Pindah data dari ERP AMICO lama
 
 1. Isi `AMICO_DB_URL` di `.env` dengan connection string database Supabase lama (hanya dibaca).

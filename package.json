@@ -7,6 +7,7 @@
   "scripts": {
     "start": "node server.js",
     "db:migrate": "node scripts/migrate.js",
+    "pindah:postgres": "node scripts/pindah-ke-postgres.js",
     "user:add": "node scripts/user-add.js",
     "import:amico": "node scripts/import-amico.js",
     "import:jobreg": "node scripts/import-jobreg.js",

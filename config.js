@@ -28,4 +28,6 @@ export const CONFIG = {
   port: Number(arg("port") || process.env.PORT || 3200),
   sessionDays: Number(process.env.SESSION_DAYS || 7),
   timezone: "Asia/Jakarta",
+  // jalan di Railway (variabel ini diisi Railway sendiri)
+  onCloud: Boolean(process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_PROJECT_ID),
 };
