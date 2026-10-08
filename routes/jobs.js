@@ -61,46 +61,61 @@ export async function jobLineStatus(t, jobId) {
      where s.job_id = $1 order by s.side desc, (s.kind <> 'TRUCKING'), s.job_line_id`, [jobId]);
 }
 
+// Tempelan daftar nomor: dipisah baris baru, koma, titik koma, tab, atau spasi
+export const parseNumbers = (v) => [...new Set((Array.isArray(v) ? v : String(v || "").split(/[\s,;]+/))
+  .map((x) => String(x).replace(/\s/g, "").toUpperCase()).filter(Boolean))];
+
+async function listJobs(db, q) {
+  const where = [];
+  const params = [];
+  const add = (sql, v) => { params.push(v); where.push(sql.replace("?", `$${params.length}`)); };
+  if (q.search) {
+    params.push(`%${q.search}%`);
+    const p = `$${params.length}`;
+    where.push(`(j.job_number ilike ${p} or j.plate_number ilike ${p} or j.do_number ilike ${p} or c.name ilike ${p} or j.driver1_name ilike ${p})`);
+  }
+  if (q.stage) add("st.stage = ?", q.stage);
+  if (q.state === "kurang_transfer") where.push("kt.job_id is not null");
+  else if (q.state) add("j.state = ?", q.state);
+  if (q.from) add("j.job_date >= ?", q.from);
+  if (q.to) add("j.job_date <= ?", q.to);
+  if (q.customer_id) add("j.customer_id = ?", Number(q.customer_id));
+  if (q.scope) add("j.delivery_scope = ?", q.scope);
+  // daftar nomor tempelan: no job atau kode tugas (DO), huruf besar / kecil & spasi diabaikan
+  const numbers = parseNumbers(q.numbers);
+  if (numbers.length) {
+    params.push(numbers);
+    const col = q.by === "do" ? "j.do_number" : "j.job_number";
+    where.push(`upper(regexp_replace(${col}, '\\s', '', 'g')) = any($${params.length}::text[])`);
+  }
+  const limit = Math.min(Number(q.limit || 300), 5000);
+  const offset = Number(q.offset || 0);
+  return db.query(
+    `select j.*, c.name as customer, v.name as vendor, lp.code as pol, ld.code as pod,
+            b.selling, b.cost, b.invoiced, b.received, b.requested, b.paid,
+            kt.vendor as kurang_transfer_vendor, kt.customer as kurang_bayar_customer,
+            st.stage, st.trip_status, st.sj_status, st.customer_status, st.vendor_status, st.sj_late, st.lead_time_sj
+     from job j
+     join v_job_status st on st.job_id = j.id
+     join res_partner c on c.id = j.customer_id
+     left join res_partner v on v.id = j.vendor_id
+     join location lp on lp.id = j.pol_id
+     join location ld on ld.id = j.pod_id
+     join v_job_balance b on b.job_id = j.id
+     left join (
+       select job_id, sum(kurang) filter (where side = 'PURCHASE') as vendor, sum(kurang) filter (where side = 'SALE') as customer
+       from v_kurang_transfer group by job_id
+     ) kt on kt.job_id = j.id
+     ${where.length ? "where " + where.join(" and ") : ""}
+     order by j.job_date desc, j.id desc limit ${limit} offset ${offset}`, params);
+}
+
 export default function jobRoutes(db) {
   const r = express.Router();
 
-  r.get("/jobs", requireRole(ROLES.READ), route(async (req) => {
-    const where = [];
-    const params = [];
-    const add = (sql, v) => { params.push(v); where.push(sql.replace("?", `$${params.length}`)); };
-    if (req.query.search) {
-      params.push(`%${req.query.search}%`);
-      const p = `$${params.length}`;
-      where.push(`(j.job_number ilike ${p} or j.plate_number ilike ${p} or j.do_number ilike ${p} or c.name ilike ${p} or j.driver1_name ilike ${p})`);
-    }
-    if (req.query.stage) add("st.stage = ?", req.query.stage);
-    if (req.query.state === "kurang_transfer") where.push("kt.job_id is not null");
-    else if (req.query.state) add("j.state = ?", req.query.state);
-    if (req.query.from) add("j.job_date >= ?", req.query.from);
-    if (req.query.to) add("j.job_date <= ?", req.query.to);
-    if (req.query.customer_id) add("j.customer_id = ?", Number(req.query.customer_id));
-    if (req.query.scope) add("j.delivery_scope = ?", req.query.scope);
-    const limit = Math.min(Number(req.query.limit || 300), 2000);
-    const offset = Number(req.query.offset || 0);
-    return db.query(
-      `select j.*, c.name as customer, v.name as vendor, lp.code as pol, ld.code as pod,
-              b.selling, b.cost, b.invoiced, b.received, b.requested, b.paid,
-              kt.vendor as kurang_transfer_vendor, kt.customer as kurang_bayar_customer,
-              st.stage, st.trip_status, st.sj_status, st.customer_status, st.vendor_status, st.sj_late, st.lead_time_sj
-       from job j
-       join v_job_status st on st.job_id = j.id
-       join res_partner c on c.id = j.customer_id
-       left join res_partner v on v.id = j.vendor_id
-       join location lp on lp.id = j.pol_id
-       join location ld on ld.id = j.pod_id
-       join v_job_balance b on b.job_id = j.id
-       left join (
-         select job_id, sum(kurang) filter (where side = 'PURCHASE') as vendor, sum(kurang) filter (where side = 'SALE') as customer
-         from v_kurang_transfer group by job_id
-       ) kt on kt.job_id = j.id
-       ${where.length ? "where " + where.join(" and ") : ""}
-       order by j.job_date desc, j.id desc limit ${limit} offset ${offset}`, params);
-  }));
+  r.get("/jobs", requireRole(ROLES.READ), route((req) => listJobs(db, req.query)));
+  // sama dengan GET /jobs, untuk daftar nomor yang panjang (tidak muat di URL)
+  r.post("/jobs/query", requireRole(ROLES.READ), route((req) => listJobs(db, req.body || {})));
 
   r.get("/jobs/:id", requireRole(ROLES.READ), route(async (req) => {
     const id = Number(req.params.id);

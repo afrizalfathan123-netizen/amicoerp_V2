@@ -90,6 +90,7 @@ export function toast(msg, error = false) {
   t.className = `show${error ? " error" : ""}`;
   clearTimeout(t._h);
   t._h = setTimeout(() => (t.className = ""), 3500);
+  window.dispatchEvent(new CustomEvent("amico:toast", { detail: { error } }));
 }
 
 export function formData(form) {
@@ -182,6 +183,8 @@ const ICON = {
   jobs: `<path d="M2 7h11v9H2z"/><path d="M13 10h4l3 3v3h-7"/><circle cx="6" cy="17.5" r="1.8"/><circle cx="16.5" cy="17.5" r="1.8"/>`,
   tracker: `<path d="M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0c0 5.4-6.5 11-6.5 11z"/><circle cx="12" cy="10" r="2.3"/>`,
   rekap: `<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>`,
+  ar: `<path d="M4 7h16v12H4z"/><path d="M4 11h16M12 14.5v3M10.5 16h3"/><path d="M8 7V5h8v2"/>`,
+  ap: `<path d="M4 7h16v12H4z"/><path d="M4 11h16M10.5 16h3"/><path d="M8 7V5h8v2"/>`,
   invoices: `<path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5M9 12h7M9 16h5"/>`,
   requests: `<path d="M21 3 10 14"/><path d="M21 3l-7 18-4-7-7-4z"/>`,
   kas: `<path d="M3 9l9-5 9 5"/><path d="M5 9v9M9.5 9v9M14.5 9v9M19 9v9M3 20h18"/>`,

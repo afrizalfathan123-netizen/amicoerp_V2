@@ -104,7 +104,7 @@ export async function checkMove(t, moveId) {
     const tag = l.job_number;
     if (l.job_state === "cancelled") fail(`${tag}: job sudah dibatalkan`);
     if (l.side !== side) fail(`${tag}: baris order tidak cocok dengan jenis dokumen`);
-    if (needGate && (!l.do_number || !l.gate_out_at)) fail(`${tag}: isi kode tugas dan jam gate out dulu (job masih rencana)`);
+    if (needGate && (!l.do_number || /TIDAK\s*ADA|^-+$/i.test(l.do_number.trim()) || !l.gate_out_at)) fail(`${tag}: isi kode tugas dan jam gate out dulu (job masih rencana)`);
     if (m.move_type === "out_invoice" && l.customer_id !== m.partner_id) fail(`${tag}: customer job beda dengan customer invoice`);
     const scheme = side === "SALE" ? l.customer_scheme : l.vendor_scheme;
     const who = side === "SALE" ? "customer" : "vendor";
@@ -290,7 +290,9 @@ export default function financeRoutes(db) {
               (select count(distinct ml.job_id)::int from account_move_line ml where ml.move_id = m.id and ml.cancelled_at is null) as total_jobs,
               (select string_agg(distinct coalesce(pp.name, ml.payee_holder), ', ') from account_move_line ml
                  left join res_partner pp on pp.id = ml.payee_partner_id where ml.move_id = m.id and ml.cancelled_at is null) as payees,
-              coalesce(tt.titipan, 0) as titipan
+              coalesce(tt.titipan, 0) as titipan,
+              (select string_agg(distinct case when m.move_type = 'out_invoice' then j.customer_scheme else j.vendor_scheme end, ',')
+                 from account_move_line ml join job j on j.id = ml.job_id where ml.move_id = m.id and ml.cancelled_at is null) as schemes
        from account_move m left join res_partner pt on pt.id = m.partner_id join v_move_status s on s.move_id = m.id
        left join v_titipan_operasional tt on tt.move_id = m.id
        where ${where.join(" and ")} order by m.id desc limit 500`, params);

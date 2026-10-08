@@ -56,7 +56,16 @@ importer), dan KURANG TRANSFER. Aturan ada di kepala `lib/import-jobreg.js`. Yan
 - Menu Surat Jalan: pemantauan lead time (gate in -> resi driver -> SJ diterima -> dikirim ke customer) dengan target hari,
   input cepat (tempel daftar no job / no SJ / kode tugas), dan Pengiriman SJ ke customer (satu resi untuk banyak SJ, nomor SJD,
   bisa dicetak). Customer tanpa SJ fisik lewat kurir: matikan "Lacak SJ" di partner.
-- Export Job List (Excel + ringkasan) di halaman Job. Teks WhatsApp pengajuan: tombol "Salin teks WhatsApp" di pengajuan vendor.
+- Daftar job: filter & urut per kolom seperti Excel (klik ▾ di header), dan **Tempel daftar** no job atau kode tugas
+  (dari Excel / WhatsApp) untuk menampilkan job itu saja sesuai urutan tempelan, plus daftar yang tidak ketemu.
+- Export Job List (Excel + ringkasan) di halaman Job; kalau ada filter kolom / daftar tempel, yang diexport persis yang tampil. Teks WhatsApp pengajuan: tombol "Salin teks WhatsApp" di pengajuan vendor.
+
+## AR Customer & AP Vendor
+
+Per job, dengan bahasa yang mudah untuk orang baru: setiap fase ditulis lengkap (DP 70%, Pelunasan 30%, Full 100%, Calo / biaya lain)
+dengan nominal, status (belum ditagih / diajukan, ditagih belum dibayar, belum bisa + alasannya, lunas), nomor dokumen, dan langkah
+berikutnya. Tab: Perlu ditagih sekarang, Belum bisa ditagih, Menunggu pembayaran, Lunas. Ada filter kolom ala Excel, Tempel daftar,
+salin no job, dan centang job -> langsung buat invoice / pengajuan untuk fase yang bisa. Angkanya sama dengan Rekap Posisi.
 
 ## Impor Job List ERP AMICO v1
 
@@ -114,5 +123,5 @@ JOB REGISTRATION), kurang transfer, jurnal kas, umur tagihan, titipan kas operas
 ```bash
 npm test
 ```
-Alur lengkap lewat HTTP per role (20 langkah) + pindah data dari tiruan database AMICO lama (12 langkah)
+Alur lengkap lewat HTTP per role (22 langkah) + pindah data dari tiruan database AMICO lama (12 langkah)
 + impor JOB REGISTRATION dari workbook tiruan (14 langkah).

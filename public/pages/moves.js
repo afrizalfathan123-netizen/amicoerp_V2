@@ -1,8 +1,10 @@
 // Invoice customer & pengajuan vendor: daftar, buat, detail (posting, persetujuan, transfer malam, bayar, batal), cetak.
 import {
   state, api, get, view, esc, rp, tgl, jam, kv, badge, options, enumOptions, table, toast, openModal, askReason, action,
-  customers, vendors, bankLabel, num, today, debounce, bindRows, canFinance, isAdmin, PHASE_LABEL, KIND_LABEL,
+  customers, vendors, bankLabel, num, today, debounce, bindRows, canFinance, isAdmin, PHASE_LABEL, KIND_LABEL, phaseLabel,
 } from "../lib.js";
+// "DP 70%" kalau semua job di dokumen berskema sama, selain itu "DP"
+const movePhase = (m) => phaseLabel(m.phase, m.schemes && !m.schemes.includes(",") ? m.schemes : null);
 
 const banks = (kind) => state.cache.banks.filter((b) => b.active && (!kind || b.kind === kind));
 const statusBadge = (m) => m.state === "posted"
@@ -18,7 +20,8 @@ async function renderMoves(type) {
   const f = JSON.parse(sessionStorage.getItem(key) || "{}");
   view().innerHTML = `
     <div class="page-head"><h1>${isInv ? "Invoice Customer" : "Pengajuan Vendor"}</h1>
-      <span class="sub">${isInv ? "Tagihan ke customer per fase (DP 70%, pelunasan, full 100%)" : "Permintaan transfer ke vendor / calo, perlu persetujuan ADMIN"}</span>
+      <span class="sub">${isInv ? "Tagihan ke customer per fase (DP 70%, pelunasan, full 100%)" : "Permintaan transfer ke vendor / calo, perlu persetujuan ADMIN"}.
+        Mau lihat job mana yang belum ${isInv ? "ditagih" : "diajukan"}? Buka <a href="#/${isInv ? "ar" : "ap"}">${isInv ? "AR Customer" : "AP Vendor"}</a>.</span>
       <div class="spacer"></div><div class="actions">${canFinance() ? `<button class="primary" id="newMove">+ ${isInv ? "Invoice baru" : "Pengajuan baru"}</button>` : ""}</div></div>
     <div class="panel">
       <div class="filters">
@@ -43,7 +46,7 @@ async function renderMoves(type) {
       rows.map((m) => `<tr class="click" data-href="#/moves/${m.id}">
         <td><b>${esc(m.number || "(draft)")}</b>${m.legacy_number && m.legacy_number !== m.number ? `<br><span class="muted">${esc(m.legacy_number)}</span>` : ""}</td>
         <td>${tgl(m.move_date)}</td><td>${esc(isInv ? m.partner : m.payees || "")}</td>
-        <td>${esc(PHASE_LABEL[m.phase])}${m.payment_channel === "TRANSFER_MALAM" ? `<br><span class="muted">transfer malam</span>` : ""}</td>
+        <td>${esc(movePhase(m))}${m.payment_channel === "TRANSFER_MALAM" ? `<br><span class="muted">transfer malam</span>` : ""}</td>
         <td class="num">${m.total_jobs}</td><td class="num">${rp(m.amount_total)}</td><td class="num">${rp(m.amount_paid)}</td>
         <td class="num">${rp(m.state === "cancelled" ? 0 : m.amount_residual)}</td>
         ${isInv ? "" : `<td class="num">${m.titipan ? rp(m.titipan) : ""}</td>`}
@@ -56,7 +59,8 @@ async function renderMoves(type) {
   await load();
 }
 
-function moveForm(type) {
+// preset (dari halaman AR / AP): { partner_id, phase, job_ids } -> job itu saja, langsung dicentang
+export function moveForm(type, preset = {}) {
   const isInv = type === "out_invoice";
   const phases = isInv ? { DP: PHASE_LABEL.DP, SETTLEMENT: PHASE_LABEL.SETTLEMENT, FULL: PHASE_LABEL.FULL } : PHASE_LABEL;
   const defBank = banks("BANK").find((b) => b.is_default)?.id;
@@ -67,15 +71,16 @@ function moveForm(type) {
     extraButtons: `<button type="submit" class="primary" data-post="1">Simpan &amp; posting</button>`,
     body: `
       <div class="form-grid">
-        ${isInv ? `<label>Customer<select name="partner_id" required>${options(customers(), "", undefined, "- pilih -")}</select></label>`
+        ${isInv ? `<label>Customer<select name="partner_id" required>${options(customers(), preset.partner_id || "", undefined, "- pilih -")}</select></label>`
                 : `<label>Vendor (filter)<select name="partner_id">${options(vendors(), "", undefined, "Semua vendor")}</select></label>`}
-        <label>Fase<select name="phase">${enumOptions(phases, "DP")}</select></label>
+        <label>Fase<select name="phase">${enumOptions(phases, preset.phase || "DP")}</select></label>
         <label>Tanggal<input type="date" name="move_date" value="${today()}"></label>
         ${isInv ? `<label>Jatuh tempo<input type="date" name="due_date"></label>
           <label>Rekening tujuan<select name="bank_account_id">${options(banks("BANK"), defBank, bankLabel, null)}</select></label>`
                 : `<label>Saluran<select name="payment_channel">${enumOptions({ NORMAL: "Normal (transfer dari rekening bank)", TRANSFER_MALAM: "Transfer malam (lewat kas operasional)" }, "NORMAL")}</select></label>`}
         <label>Cari job / plat<input name="search"></label>
-        ${isInv ? `<label class="check"><input type="checkbox" name="sj_received" checked> Hanya job yang SJ-nya sudah diterima</label>` : ""}
+        ${isInv ? `<label class="check"><input type="checkbox" name="sj_received" ${preset.job_ids ? "" : "checked"}> Hanya job yang SJ-nya sudah diterima</label>` : ""}
+        ${preset.job_ids ? `<label class="check wide"><input type="checkbox" name="only_preset" checked> Hanya ${preset.job_ids.length} job yang dicentang di ${isInv ? "AR Customer" : "AP Vendor"}</label>` : ""}
         <label class="wide">Catatan<input name="note"></label>
       </div>
       <div class="table-wrap" id="eligible" style="margin-top:12px"><p class="empty">${isInv ? "Pilih customer dulu." : "Memuat..."}</p></div>`,
@@ -85,7 +90,8 @@ function moveForm(type) {
         const box = form.querySelector("#eligible");
         if (isInv && !E.partner_id.value) return;
         const rows = await get(`/moves/eligible?${new URLSearchParams({ move_type: type, phase: E.phase.value, partner_id: E.partner_id.value, search: E.search.value,
-          sj_received: isInv && E.sj_received.checked && E.phase.value !== "DP" ? "1" : "" })}`);
+          sj_received: isInv && E.sj_received.checked && E.phase.value !== "DP" ? "1" : "",
+          ...(preset.job_ids && E.only_preset?.checked ? { job_ids: preset.job_ids.join(",") } : {}) })}`);
         // hanya yang masih bisa ditagih / diajukan di fase ini (mis. DP yang sudah diajukan tidak muncul lagi)
         const items = rows.filter((r) => r.suggested > 0);
         box.innerHTML = items.length ? `<table>
@@ -112,11 +118,14 @@ function moveForm(type) {
         box.querySelectorAll("[data-i], [data-amount]").forEach((x) => (x.oninput = total));
         const all = box.querySelector("#checkAll");
         if (all) all.onchange = () => { box.querySelectorAll("[data-i]").forEach((c) => (c.checked = all.checked)); total(); };
+        if (preset.job_ids && E.only_preset?.checked) { box.querySelectorAll("[data-i]").forEach((c) => (c.checked = true)); if (all) all.checked = true; total(); }
       };
       E.partner_id.onchange = load;
       E.phase.onchange = load;
       E.search.oninput = debounce(load);
-      if (!isInv) load();
+      if (E.only_preset) E.only_preset.onchange = load;
+      if (E.sj_received) E.sj_received.onchange = load;
+      if (!isInv || E.partner_id.value) load();
     },
     onSubmit: async (d, form, submitter) => {
       const lines = [...form.querySelectorAll("[data-i]:checked")].map((c) => {

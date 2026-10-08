@@ -1,5 +1,6 @@
 // ERP AMICO v2: router, menu sesuai role, login.
 import { state, api, get, esc, view, toast, loadMaster, openModal, ROLE_LABEL, can, icon } from "./lib.js";
+import { startFox } from "./fox.js";
 
 const NAV = [
   { group: "Operasional" },
@@ -9,6 +10,8 @@ const NAV = [
   { href: "#/sj", key: "sj", label: "Surat Jalan" },
   { group: "Keuangan" },
   { href: "#/rekap", key: "rekap", label: "Rekap Posisi" },
+  { href: "#/ar", key: "ar", label: "AR Customer" },
+  { href: "#/ap", key: "ap", label: "AP Vendor" },
   { href: "#/invoices", key: "invoices", label: "Invoice Customer" },
   { href: "#/requests", key: "requests", label: "Pengajuan Vendor" },
   { href: "#/kas", key: "kas", label: "Kas & Rekening" },
@@ -40,6 +43,8 @@ const ROUTES = [
   [/^#\/sj$/, "sj", "renderSj", "sj"],
   [/^#\/sj\/deliveries\/(\d+)\/cetak$/, "sj", "renderDeliveryPrint", "sj"],
   [/^#\/rekap$/, "reports", "renderRekap", "rekap"],
+  [/^#\/ar$/, "billing", "renderAr", "ar"],
+  [/^#\/ap$/, "billing", "renderAp", "ap"],
   [/^#\/invoices$/, "moves", "renderInvoices", "invoices"],
   [/^#\/requests$/, "moves", "renderRequests", "requests"],
   [/^#\/moves\/(\d+)$/, "moves", "renderMoveDetail", null],
@@ -64,7 +69,8 @@ function renderNav(activeKey) {
         <span class="who"><b>${esc(state.user.display_name)}</b><small>${esc(ROLE_LABEL[state.user.role])} · @${esc(state.user.username)}</small></span>
         ${icon("chevron", 16)}
       </summary>
-      <div class="user-actions"><a href="#" id="changePw">Ganti password</a><a href="#" id="logout">Keluar</a></div>
+      <div class="user-actions"><a href="#" id="changePw">Ganti password</a>
+        <a href="#" id="foxToggle">${startFox().enabled() ? "Matikan" : "Nyalakan"} rubah</a><a href="#" id="logout">Keluar</a></div>
     </details>`;
   const { group, label } = navInfo(activeKey);
   const company = state.cache.settings?.company_name || "PT AMICO";
@@ -78,6 +84,13 @@ function renderNav(activeKey) {
   document.getElementById("topNewJob")?.addEventListener("click", async () => {
     (await import("./pages/jobs.js")).jobForm();
   });
+  document.getElementById("foxToggle").onclick = (e) => {
+    e.preventDefault();
+    const fox = startFox();
+    fox.set(!fox.enabled());
+    e.target.textContent = `${fox.enabled() ? "Matikan" : "Nyalakan"} rubah`;
+    toast(fox.enabled() ? "Rubah dinyalakan" : "Rubah dimatikan");
+  };
   document.getElementById("logout").onclick = async (e) => {
     e.preventDefault();
     await api("POST", "/logout");

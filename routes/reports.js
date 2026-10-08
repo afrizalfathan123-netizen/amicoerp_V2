@@ -126,6 +126,33 @@ export default function reportRoutes(db) {
        from v_job_phase_position ${f.sql} group by side, phase order by side desc, ${PHASE_ORDER}`, f.params);
   }));
 
+  // AR / AP per job: tiap fase (DP, pelunasan, full, calo / biaya lain) dengan rencana, sudah ditagih / diajukan, dibayar,
+  // dan nomor dokumennya. Dipakai halaman AR Customer (side=SALE) dan AP Vendor (side=PURCHASE).
+  r.get("/billing", read, route((req) => {
+    const side = req.query.side === "PURCHASE" ? "PURCHASE" : "SALE";
+    return db.query(
+      `with pp as materialized (select * from v_job_phase_position where side = $1),
+       docs as (
+         select ml.job_id, case when jl.side = 'PURCHASE' and p.kind <> 'TRUCKING' then 'OTHER' else m.phase end as phase,
+                string_agg(distinct m.number, ', ') as docs,
+                string_agg(distinct m.number, ', ') filter (where s.amount_residual > 0) as open_docs
+         from account_move_line ml join account_move m on m.id = ml.move_id and m.state = 'posted'
+         join v_move_status s on s.move_id = m.id
+         join job_line jl on jl.id = ml.job_line_id and jl.side = $1 join product p on p.id = jl.product_id
+         where ml.cancelled_at is null group by 1, 2
+       )
+       select j.id as job_id, j.customer_id, j.vendor_id, j.job_number, j.do_number, j.job_date, j.plate_number, j.truck_type, j.trip_type, j.delivery_scope,
+              j.gate_out_at, j.sj_received_at, cu.name as customer, cu.sj_tracking, v.name as vendor, lp.code as pol, ld.code as pod,
+              st.stage, max(pp.scheme) as scheme,
+              json_agg(json_build_object('phase', pp.phase, 'planned', pp.planned, 'billed', pp.billed, 'paid', pp.paid,
+                'not_billed', pp.not_billed, 'outstanding', pp.outstanding, 'docs', d.docs, 'open_docs', d.open_docs)) as phases
+       from pp join job j on j.id = pp.job_id join res_partner cu on cu.id = j.customer_id left join res_partner v on v.id = j.vendor_id
+       join location lp on lp.id = j.pol_id join location ld on ld.id = j.pod_id join v_job_status st on st.job_id = j.id
+       left join docs d on d.job_id = pp.job_id and d.phase = pp.phase
+       group by j.id, cu.id, v.id, lp.id, ld.id, st.stage
+       order by j.job_date desc, j.id desc`, [side]);
+  }));
+
   r.get("/rekap/jobs", read, route((req) => {
     const f = filterSql(req.query, { allowed: ["customer_id", "scheme", "side", "phase", "status"] });
     return db.query(`select * from v_job_phase_position ${f.sql} order by job_date, job_id limit 2000`, f.params);

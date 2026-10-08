@@ -316,3 +316,43 @@ input.amount { width: 130px; }
 tr.pick td { background: #fff3df; }
 mark { background: var(--amber-soft); color: var(--espresso); padding: 0 1px; border-radius: 3px; }
 .grid-2 .wide-panel { grid-column: 1 / -1; }
+
+/* filter kolom ala Excel (xlfilter.js) */
+.xl-info { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+.xl-th { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.xl-btn { padding: 0 5px; min-height: 0; height: 20px; line-height: 18px; font-size: 11px; border-radius: 5px; background: transparent; border: 1px solid transparent; color: var(--muted); box-shadow: none; }
+.xl-btn:hover { border-color: var(--line-2); color: var(--espresso); }
+.xl-btn.on { background: var(--amber); border-color: var(--amber); color: var(--espresso); }
+.xl-pop { position: absolute; z-index: 60; width: 270px; background: var(--paper); border: 1px solid var(--line-2); border-radius: 10px; box-shadow: 0 10px 30px rgba(42,26,14,.18); padding: 8px; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.xl-pop > button[data-sort] { text-align: left; background: transparent; border: 0; box-shadow: none; padding: 6px 8px; font-weight: 400; }
+.xl-pop > button[data-sort]:hover { background: #f6e2c2; }
+.xl-pop hr { border: 0; border-top: 1px solid var(--line-2); margin: 2px 0; width: 100%; }
+.xl-pop input[type=search] { width: 100%; }
+.xl-pop label { display: flex; flex-direction: row; align-items: center; gap: 8px; color: var(--ink); font-size: 13px; margin: 0; }
+.xl-pop label input { width: auto; accent-color: var(--espresso); }
+.xl-list { max-height: 260px; overflow: auto; border: 1px solid var(--line-2); border-radius: 7px; padding: 4px 6px; }
+.xl-list label { padding: 3px 0; }
+.xl-list label span { flex: 1; word-break: break-word; }
+.xl-list label small { color: var(--muted); }
+.xl-foot { display: flex; gap: 6px; align-items: center; }
+.xl-foot .spacer { flex: 1; }
+.paste-box { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.paste-box .spacer { flex: 1; }
+
+/* AR / AP per job */
+details.legend summary { cursor: pointer; }
+details.legend ul { margin: 10px 0 0; padding-left: 18px; color: var(--muted); font-size: 13px; line-height: 1.55; }
+details.legend li { margin-bottom: 4px; }
+.ph-cell { min-width: 150px; line-height: 1.35; }
+.next-step { min-width: 200px; font-size: 12px; }
+.next-step div + div { color: var(--muted); }
+.action-box { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 10px; }
+.action-box .spacer { flex: 1; }
+th.xl-sel, td.xl-sel { width: 28px; }
+
+/* maskot rubah 8-bit (fox.js) */
+.fox-layer { position: fixed; height: 90px; overflow: hidden; pointer-events: none; z-index: 6; }
+.fox-layer[hidden] { display: none; }
+.fox { position: absolute; left: 0; top: 0; width: 90px; height: 90px; image-rendering: pixelated; cursor: pointer; pointer-events: none;
+  filter: drop-shadow(0 2px 0 rgba(42,26,14,.12)); will-change: transform; }
+@media print { .fox-layer { display: none !important; } }

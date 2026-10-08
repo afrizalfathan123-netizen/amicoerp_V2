@@ -390,6 +390,24 @@ try {
     const rekap = await viewer.call("GET", "/rekap");
     assert.ok(rekap.some((r) => r.side === "PURCHASE" && r.phase === "DP"));
     await viewer.call("GET", "/aging?move_type=in_invoice");
+    // AR / AP per job: tiap fase dengan rencana, ditagih, dibayar, nomor dokumen
+    const ar = await viewer.call("GET", "/billing?side=SALE");
+    const ap = await viewer.call("GET", "/billing?side=PURCHASE");
+    const j1 = ap.find((r) => r.job_number === "AMC/2609/0001");
+    assert.ok(ar.length > 0 && j1 && j1.phases.some((p) => p.phase === "DP" && p.planned === 12600000));
+    const pos = await viewer.call("GET", "/rekap");
+    const sumAp = (f) => ap.reduce((a, r) => a + r.phases.reduce((x, p) => x + p[f], 0), 0);
+    assert.equal(sumAp("not_billed"), pos.filter((r) => r.side === "PURCHASE").reduce((a, r) => a + r.not_billed, 0), "sama dengan Rekap Posisi");
+    assert.ok((await viewer.call("GET", "/moves?move_type=in_invoice")).some((m) => m.schemes === "70_30"));
+    // tempel daftar no job / kode tugas (huruf kecil, spasi, koma), export persis job yang tampil
+    const all = await viewer.call("GET", "/jobs?limit=5000");
+    const [x, y] = all;
+    const byNo = await viewer.call("POST", "/jobs/query", { numbers: `${x.job_number.toLowerCase()}, ${y.job_number}
+ AMC/0000/9999`, limit: 5000 });
+    assert.deepEqual(byNo.map((j) => j.id).sort(), [x.id, y.id].sort());
+    const withDo = all.find((j) => j.do_number);
+    if (withDo) assert.ok((await viewer.call("POST", "/jobs/query", { numbers: [withDo.do_number], by: "do" })).some((j) => j.id === withDo.id));
+    assert.ok((await viewer.call("POST", "/export/job-list.xlsx", { ids: [x.id, y.id] })).byteLength > 3000);
     for (const f of ["utang-piutang", "jurnal-kas", "posisi", "kurang-transfer", "tracker"]) {
       const buf = await viewer.call("GET", `/export/${f}.xlsx`);
       assert.ok(buf.byteLength > 1000, f);

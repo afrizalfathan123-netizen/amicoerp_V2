@@ -234,16 +234,18 @@ export default function sjRoutes(db) {
   })));
 
   // Export Job List (semua job aktif atau sesuai filter) + sheet RINGKASAN
-  r.get("/export/job-list.xlsx", read, async (req, res) => {
+  // GET: filter tanggal / status. POST { ids }: persis job yang tampil di layar (setelah filter kolom / tempel daftar).
+  const exportJobList = async (req, res, q, ids) => {
     try {
       const params = [];
       const where = ["true"];
       const add = (sql, v) => { params.push(v); where.push(sql.replace("?", `$${params.length}`)); };
-      if (req.query.stage) add("st.stage = ?", req.query.stage);
-      if (req.query.from) add("j.job_date >= ?", req.query.from);
-      if (req.query.to) add("j.job_date <= ?", req.query.to);
-      if (req.query.customer_id) add("j.customer_id = ?", Number(req.query.customer_id));
-      if (req.query.include_cancelled !== "1") where.push("j.state <> 'cancelled'");
+      if (ids) add("j.id = any(?::int[])", ids.map(Number).filter(Boolean));
+      if (q.stage) add("st.stage = ?", q.stage);
+      if (q.from) add("j.job_date >= ?", q.from);
+      if (q.to) add("j.job_date <= ?", q.to);
+      if (q.customer_id) add("j.customer_id = ?", Number(q.customer_id));
+      if (!ids && q.include_cancelled !== "1") where.push("j.state <> 'cancelled'");
       const rows = await db.query(
         `select j.job_date, j.gate_out_at, j.gate_in_at, j.job_number, j.sj_number, c.name as customer, lp.code as pol, ld.code as pod,
                 j.truck_type, j.plate_number, j.sj_resi_received_at, j.sj_resi_number, j.sj_received_at, st.lead_time_sj,
@@ -308,6 +310,12 @@ export default function sjRoutes(db) {
     } catch (err) {
       res.status(500).send(err.message);
     }
+  };
+  r.get("/export/job-list.xlsx", read, (req, res) => exportJobList(req, res, req.query, null));
+  r.post("/export/job-list.xlsx", read, (req, res) => {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids : [];
+    if (!ids.length) return res.status(400).json({ error: "Tidak ada job yang dipilih" });
+    return exportJobList(req, res, {}, ids);
   });
 
   // Unggah export Job List ERP AMICO v1: lengkapi job yang ada + tambah job baru (ADMIN). pratinjau=1 tidak menyimpan.

@@ -7,6 +7,7 @@ import {
 import { gateModal, positionModal } from "./tracker.js";
 import { ledgerTable, shortPanel } from "./reports.js";
 import { unassignedTable } from "./unassigned.js";
+import { xlTable } from "../xlfilter.js";
 
 const SCOPE = { INTERCITY: "Antar kota", INNERCITY: "Dalam kota" };
 const TRIP = { ONE_WAY: "One way", ROUND_TRIP: "PP / round trip" };
@@ -18,11 +19,42 @@ function shortBadge(j) {
   return parts.length ? `<br><span class="badge warn" title="Kurang transfer ${esc(parts.join(", "))}">Kurang transfer</span>` : "";
 }
 
+// Kolom daftar job: filter & urut ala Excel di header (lihat xlfilter.js)
+const routeOf = (j) => `${j.pol} - ${j.pod}${j.trip_type === "ROUND_TRIP" ? " PP" : ""}`;
+const JOB_COLUMNS = [
+  { key: "job_number", label: "No job", value: (j) => j.job_number },
+  { key: "do_number", label: "Kode tugas", value: (j) => j.do_number },
+  { key: "job_date", label: "Tgl", value: (j) => tgl(j.job_date) },
+  { key: "customer", label: "Customer", value: (j) => j.customer },
+  { key: "route", label: "Rute", value: routeOf },
+  { key: "truck_type", label: "Truk", value: (j) => j.truck_type },
+  { key: "plate_number", label: "Plat", value: (j) => j.plate_number },
+  { key: "driver", label: "Driver", value: (j) => j.driver1_name },
+  { key: "scheme", label: "Skema", value: (j) => SCHEME_SHORT[j.customer_scheme] },
+  { key: "selling", label: "Selling", num: true, value: (j) => j.selling },
+  { key: "cost", label: "Cost", num: true, value: (j) => j.cost },
+  { key: "piutang", label: "Piutang", num: true, value: (j) => j.selling - j.received },
+  { key: "utang", label: "Utang", num: true, value: (j) => j.cost - j.paid },
+  { key: "stage", label: "Status", value: (j) => STAGE_LABEL[j.stage] || j.stage },
+];
+const jobRow = (j) => `<tr class="click" data-href="#/jobs/${j.id}">
+  <td><b>${esc(j.job_number)}</b></td><td>${esc(j.do_number || "")}</td><td class="nowrap">${tgl(j.job_date)}</td><td>${esc(j.customer)}</td>
+  <td>${esc(routeOf(j))}${j.delivery_scope === "INNERCITY" ? `<br><span class="muted">dalam kota${j.rit_number ? ` rit ${j.rit_number}` : ""}</span>` : ""}</td>
+  <td>${esc(j.truck_type)}</td><td class="nowrap">${esc(j.plate_number || "")}</td><td>${esc(j.driver1_name || "")}</td>
+  <td>${SCHEME_SHORT[j.customer_scheme]}${j.vendor_scheme !== j.customer_scheme ? `<br><span class="muted">vendor ${SCHEME_SHORT[j.vendor_scheme]}</span>` : ""}</td>
+  <td class="num">${rp(j.selling)}</td><td class="num">${rp(j.cost)}</td>
+  <td class="num">${rp(j.selling - j.received)}</td><td class="num">${rp(j.cost - j.paid)}</td>
+  <td>${stageBadge(j.stage)}${j.sj_late ? `<br><span class="badge warn" title="${esc(SJ_LATE_LABEL[j.sj_late])}">SJ terlambat</span>` : ""}${shortBadge(j)}</td></tr>`;
+const PASTE_BY = { job: "No job", do: "Kode tugas" };
+const norm = (v) => String(v || "").replace(/\s/g, "").toUpperCase();
+const LIMIT = 5000;
+
 export async function renderJobs() {
   const f = JSON.parse(sessionStorage.getItem("jobFilter") || "{}");
+  let paste = JSON.parse(sessionStorage.getItem("jobPaste") || "null");   // { by, numbers }
   view().innerHTML = `
     <div class="page-head"><h1>Job</h1><div class="spacer"></div>
-      <div class="actions"><a class="btn" id="exportJobs">Export Excel</a>
+      <div class="actions"><a class="btn" id="exportJobs" title="Export job yang tampil di tabel">Export Excel</a>
         ${isAdmin() ? `<label class="btn" style="flex-direction:row" title="Lengkapi job dari export Job List ERP AMICO v1 (driver, gate, SJ, vendor, rekening) dan tambah job yang belum ada">Impor Job List v1<input type="file" id="importV1" accept=".xlsx" hidden></label>` : ""}
         ${canJob() ? `<button class="primary" id="newJob">+ Job baru</button>` : ""}</div></div>
     <div class="tiles" id="stageTiles"></div>
@@ -34,33 +66,95 @@ export async function renderJobs() {
         <label>Lingkup<select id="jScope"><option value="">Semua</option>${enumOptions(SCOPE, f.scope)}</select></label>
         <label>Dari<input type="date" id="jFrom" value="${esc(f.from || "")}"></label>
         <label>Sampai<input type="date" id="jTo" value="${esc(f.to || "")}"></label>
+        <button id="jPaste" title="Tempel daftar no job / kode tugas dari Excel atau WhatsApp">Tempel daftar</button>
       </div>
+      <div id="pasteBox"></div>
       <div id="jobTable"></div>
     </div>`;
   document.getElementById("newJob")?.addEventListener("click", () => jobForm());
   const el = (id) => document.getElementById(id);
-  const load = async () => {
-    const flt = { search: el("jSearch").value, stage: el("jStage").value, state: el("jState").value, scope: el("jScope").value, from: el("jFrom").value, to: el("jTo").value };
-    sessionStorage.setItem("jobFilter", JSON.stringify(flt));
-    const rows = await get(`/jobs?${new URLSearchParams(flt)}`);
-    el("jobTable").innerHTML = table(
-      `<th>No job</th><th>Tgl</th><th>Customer</th><th>Rute</th><th>Truk / plat</th><th>Driver</th><th>Skema</th>
-       <th class="num">Selling</th><th class="num">Cost</th><th class="num">Piutang</th><th class="num">Utang</th><th>Status</th>`,
-      rows.map((j) => `<tr class="click" data-href="#/jobs/${j.id}">
-        <td><b>${esc(j.job_number)}</b></td><td>${tgl(j.job_date)}</td><td>${esc(j.customer)}</td>
-        <td>${esc(j.pol)} - ${esc(j.pod)}${j.trip_type === "ROUND_TRIP" ? " PP" : ""}${j.delivery_scope === "INNERCITY" ? `<br><span class="muted">dalam kota${j.rit_number ? ` rit ${j.rit_number}` : ""}</span>` : ""}</td>
-        <td>${esc(j.truck_type)}<br><span class="muted">${esc(j.plate_number || "")}</span></td>
-        <td>${esc(j.driver1_name || "")}</td>
-        <td>${SCHEME_SHORT[j.customer_scheme]}${j.vendor_scheme !== j.customer_scheme ? `<br><span class="muted">vendor ${SCHEME_SHORT[j.vendor_scheme]}</span>` : ""}</td>
-        <td class="num">${rp(j.selling)}</td><td class="num">${rp(j.cost)}</td>
-        <td class="num">${rp(j.selling - j.received)}</td><td class="num">${rp(j.cost - j.paid)}</td>
-        <td>${stageBadge(j.stage)}${j.sj_late ? `<br><span class="badge warn" title="${esc(SJ_LATE_LABEL[j.sj_late])}">SJ terlambat</span>` : ""}${shortBadge(j)}</td></tr>`).join(""),
-      "Belum ada job") + (rows.length >= 300 ? `<div class="note-box">Ditampilkan 300 job terbaru. Persempit dengan filter.</div>` : "");
-    bindRows(el("jobTable"));
+  const topIds = ["jSearch", "jStage", "jState", "jScope", "jFrom", "jTo"];
+  // urutan bawaan: sesuai urutan tempelan kalau sedang memakai daftar tempel
+  const pos = () => new Map((paste?.numbers || []).map((n, i) => [n, i]));
+  let posMap = pos();
+  const keyOf = (j) => norm(paste?.by === "do" ? j.do_number : j.job_number);
+  const grid = xlTable(el("jobTable"), {
+    id: "jobs", columns: JOB_COLUMNS, rowHtml: jobRow, empty: "Tidak ada job",
+    order: (a, b) => (paste ? (posMap.get(keyOf(a)) ?? 1e9) - (posMap.get(keyOf(b)) ?? 1e9) : 0),
+    onChange: () => bindRows(el("jobTable")),
+  });
+
+  const showPaste = (rows) => {
+    for (const k of topIds) el(k).disabled = !!paste;
+    if (!paste) { el("pasteBox").innerHTML = ""; return; }
+    const found = new Map();
+    for (const j of rows) found.set(keyOf(j), (found.get(keyOf(j)) || 0) + 1);
+    const missing = paste.numbers.filter((n) => !found.has(n));
+    const dup = [...found.entries()].filter(([, n]) => n > 1).map(([k]) => k);
+    el("pasteBox").innerHTML = `<div class="note-box warn-box paste-box"><span>
+      Menampilkan <b>${rp(paste.numbers.length)} ${esc(PASTE_BY[paste.by].toLowerCase())}</b> dari daftar tempel:
+      ${rp(paste.numbers.length - missing.length)} ketemu${missing.length ? `, <b>${rp(missing.length)} tidak ketemu</b>` : ""}${dup.length ? `, ${rp(dup.length)} dipakai lebih dari satu job` : ""}.
+      Filter di atas tidak dipakai selama daftar tempel aktif.</span>
+      <span class="spacer"></span>
+      ${missing.length ? `<button type="button" class="small" id="pMissing">Lihat yang tidak ketemu</button>` : ""}
+      <button type="button" class="small" id="pEdit">Ubah daftar</button><button type="button" class="small" id="pClear">Hapus daftar</button></div>`;
+    el("pClear").onclick = () => { paste = null; sessionStorage.removeItem("jobPaste"); load(); };
+    el("pEdit").onclick = pasteModal;
+    el("pMissing")?.addEventListener("click", () => openModal({
+      title: `${rp(missing.length)} ${PASTE_BY[paste.by].toLowerCase()} tidak ketemu`,
+      body: `<textarea rows="12" style="width:100%" readonly>${esc(missing.join("\n"))}</textarea>
+        <div class="note-box">${paste.by === "do" ? "Kode tugas harus sama persis dengan yang tercatat di job (huruf besar / kecil dan spasi diabaikan)." : "Cek salah ketik nomor, atau job memang belum ada di ERP."}</div>`,
+    }));
   };
+
+  const load = async () => {
+    const flt = Object.fromEntries(topIds.map((k) => [k.slice(1).toLowerCase(), el(k).value]));
+    sessionStorage.setItem("jobFilter", JSON.stringify(flt));
+    posMap = pos();
+    const rows = paste
+      ? await api("POST", "/jobs/query", { numbers: paste.numbers, by: paste.by, limit: LIMIT })
+      : await get(`/jobs?${new URLSearchParams({ ...flt, limit: LIMIT })}`);
+    showPaste(rows);
+    grid.setRows(rows);
+    if (rows.length >= LIMIT) el("jobTable").insertAdjacentHTML("beforeend", `<div class="note-box">Ditampilkan ${rp(LIMIT)} job terbaru. Persempit dengan filter tanggal.</div>`);
+  };
+
+  function pasteModal() {
+    openModal({
+      title: "Tempel daftar job",
+      body: `<div class="form-grid">
+          <label>Cari berdasarkan<select name="by">${enumOptions(PASTE_BY, paste?.by || "job")}</select></label></div>
+        <label>Daftar (satu per baris, atau dipisah koma / spasi)<textarea name="list" rows="12" style="width:100%" placeholder="AMC/2610/0288&#10;AMC/2610/0289&#10;...">${esc((paste?.numbers || []).join("\n"))}</textarea></label>
+        <div class="note-box">Tempel langsung dari kolom Excel atau chat WhatsApp. Tabel menampilkan job sesuai urutan daftar; filter & urut per kolom tetap bisa dipakai, dan Export Excel mengikuti yang tampil.</div>`,
+      submitLabel: "Tampilkan",
+      onSubmit: async (d) => {
+        const numbers = [...new Set(String(d.list).split(/[\s,;]+/).map(norm).filter(Boolean))];
+        if (!numbers.length) throw new Error("Daftar masih kosong");
+        paste = { by: d.by, numbers };
+        sessionStorage.setItem("jobPaste", JSON.stringify(paste));
+        await load();
+      },
+    });
+  }
+  el("jPaste").onclick = pasteModal;
   el("jSearch").oninput = debounce(load);
   for (const k of ["jStage", "jState", "jScope", "jFrom", "jTo"]) el(k).onchange = load;
-  el("exportJobs").onclick = () => {
+  el("exportJobs").onclick = async () => {
+    // ada filter kolom / daftar tempel -> export persis yang tampil; selain itu pakai filter tanggal & status
+    if (paste || grid.active() || el("jSearch").value || el("jState").value || el("jScope").value) {
+      const ids = grid.visible().map((j) => j.id);
+      if (!ids.length) return toast("Tidak ada job yang tampil", true);
+      try {
+        const res = await fetch("/api/export/job-list.xlsx", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids }) });
+        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "Export gagal");
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(await res.blob());
+        a.download = `job-list-${today()}.xlsx`;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+      } catch (e) { toast(e.message, true); }
+      return;
+    }
     const q = new URLSearchParams(Object.fromEntries(Object.entries({ stage: el("jStage").value, from: el("jFrom").value, to: el("jTo").value }).filter(([, v]) => v)));
     location.href = `/api/export/job-list.xlsx?${q}`;
   };
@@ -71,6 +165,7 @@ export async function renderJobs() {
     `<a href="#" class="tile" data-stage="${s}"><div class="label">${esc(STAGE_LABEL[s])}</div><div class="value">${rp(sum.stages[s] || 0)}</div></a>`).join("");
   el("stageTiles").querySelectorAll("[data-stage]").forEach((a) => (a.onclick = (e) => {
     e.preventDefault();
+    if (paste) return toast("Hapus daftar tempel dulu untuk memfilter per status", true);
     el("jStage").value = el("jStage").value === a.dataset.stage ? "" : a.dataset.stage;
     load();
   }));
