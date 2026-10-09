@@ -8,27 +8,53 @@ const thisMonth = () => new Date().toLocaleDateString("sv-SE", { timeZone: "Asia
 const monthName = (m) => new Date(`${m}-01T00:00:00`).toLocaleDateString("id-ID", { month: "long", year: "numeric" });
 const banks = () => state.cache.banks.filter((b) => b.active);
 const reload = () => window.dispatchEvent(new Event("hashchange"));
+const tglId = (d) => new Date(`${d}T00:00:00`).toLocaleDateString("id-ID", { day: "numeric", month: "short", year: "numeric" });
+// periode tampilan: per bulan, rentang tanggal bebas, atau keseluruhan (sejak kontrak pertama s/d hari ini)
+function periodOf(saved) {
+  const mode = ["month", "range", "all"].includes(saved.mode) ? saved.mode : "month";
+  const month = saved.month || thisMonth();
+  const from = saved.from || `${month}-01`;
+  const to = saved.to || new Date().toLocaleDateString("sv-SE", { timeZone: "Asia/Jakarta" });
+  const P = { mode, month, from, to };
+  P.qs = mode === "all" ? "all=1" : mode === "range" ? `from=${from}&to=${to}` : `month=${month}`;
+  P.body = mode === "all" ? { all: 1 } : mode === "range" ? { from, to } : { month };
+  P.label = mode === "all" ? "keseluruhan" : mode === "range" ? `${tglId(from)} – ${tglId(to)}` : monthName(month);
+  return P;
+}
 // untung (hijau) / rugi (merah, tanda minus)
 const pl = (v) => `<span class="sign ${Number(v) >= 0 ? "plus" : "minus"}">${Number(v) < 0 ? "&minus;" : ""}${rp(Math.abs(Number(v)))}</span>`;
 
 export async function renderUnits() {
   const saved = JSON.parse(sessionStorage.getItem("units") || "{}");
   const tab = TABS[saved.tab] ? saved.tab : "profit";
-  const month = saved.month || thisMonth();
-  const save = (x) => sessionStorage.setItem("units", JSON.stringify({ tab, month, ...x }));
+  const P = periodOf(saved);
+  const save = (x) => sessionStorage.setItem("units", JSON.stringify({ ...saved, tab, ...x }));
   view().innerHTML = `
     <div class="page-head"><h1>Unit Sewa</h1>
       <span class="sub">Unit yang disewa bulanan: biaya per hari, untung per trip, dan untung per unit. Trip diambil otomatis dari job dengan plat yang sama.</span>
       <div class="spacer"></div>
-      <label class="month-pick">Bulan<input type="month" id="uMonth" value="${esc(month)}"></label></div>
+      <div class="period-pick">
+        <label>Periode<select id="uMode">${[["month", "Per bulan"], ["range", "Rentang tanggal"], ["all", "Keseluruhan"]]
+          .map(([v, l]) => `<option value="${v}" ${P.mode === v ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+        ${P.mode === "month" ? `<label>Bulan<input type="month" id="uMonth" value="${esc(P.month)}"></label>` : ""}
+        ${P.mode === "range" ? `<label>Dari<input type="date" id="uFrom" value="${esc(P.from)}"></label>
+          <label>Sampai<input type="date" id="uTo" value="${esc(P.to)}"></label>` : ""}
+      </div></div>
     <div class="tabs">${Object.entries(TABS).map(([k, l]) => `<a href="#" data-tab="${k}" class="${k === tab ? "active" : ""}">${esc(l)}</a>`).join("")}</div>
     <div id="uBox"><p class="muted">Memuat...</p></div>`;
   view().querySelectorAll("[data-tab]").forEach((a) => (a.onclick = (e) => { e.preventDefault(); save({ tab: a.dataset.tab }); renderUnits(); }));
-  document.getElementById("uMonth").onchange = (e) => { save({ month: e.target.value || thisMonth() }); renderUnits(); };
+  document.getElementById("uMode").onchange = (e) => { save({ mode: e.target.value }); renderUnits(); };
+  document.getElementById("uMonth")?.addEventListener("change", (e) => { save({ month: e.target.value || thisMonth() }); renderUnits(); });
+  const range = () => {
+    const from = document.getElementById("uFrom").value, to = document.getElementById("uTo").value;
+    if (from && to && from <= to) { save({ from, to }); renderUnits(); } else if (from && to) toast("Tanggal awal harus sebelum tanggal akhir", true);
+  };
+  document.getElementById("uFrom")?.addEventListener("change", range);
+  document.getElementById("uTo")?.addEventListener("change", range);
   const box = document.getElementById("uBox");
   if (tab === "contracts") return renderContracts(box);
-  if (tab === "bills") return renderBills(box, month);
-  return renderProfit(box, month, saved.unit);
+  if (tab === "bills") return renderBills(box, P);
+  return renderProfit(box, P, saved.unit);
 }
 
 // ---------------------------------------------------------------- untung rugi
@@ -75,28 +101,45 @@ async function downloadExcel(body) {
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "Export gagal");
     const a = document.createElement("a");
     a.href = URL.createObjectURL(await res.blob());
-    a.download = (res.headers.get("Content-Disposition") || "").match(/filename="([^"]+)"/)?.[1] || `unit-sewa-${body.month}.xlsx`;
+    a.download = (res.headers.get("Content-Disposition") || "").match(/filename="([^"]+)"/)?.[1] || "unit-sewa.xlsx";
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 10000);
   } catch (e) { toast(e.message, true); }
 }
 
-async function renderProfit(box, month, openUnit) {
-  const s = await get(`/units/summary?month=${month}`);
-  const current = month === s.today.slice(0, 7);
+const PER_BULAN_COLS = [
+  { key: "bulan", label: "Bulan", value: (x) => x.bulan, text: (x) => monthName(x.bulan) },
+  { key: "plate_number", label: "Unit", value: (x) => x.plate_number },
+  { key: "hari_jalan", label: "Hari jalan", num: true, value: (x) => x.hari_jalan, text: (x) => String(x.hari_jalan) },
+  { key: "hari_menganggur", label: "Menganggur", num: true, value: (x) => x.hari_menganggur, text: (x) => String(x.hari_menganggur) },
+  { key: "utilisasi", label: "Utilisasi", num: true, value: (x) => x.utilisasi, text: (x) => `${x.utilisasi}%` },
+  { key: "trips", label: "Trip", num: true, value: (x) => x.trips, text: (x) => String(x.trips) },
+  { key: "selling", label: "Selling", num: true, value: (x) => x.selling },
+  { key: "uang_jalan", label: "Uang jalan", num: true, value: (x) => x.uang_jalan },
+  { key: "kontribusi", label: "Kontribusi", num: true, value: (x) => x.kontribusi },
+  { key: "sewa_sd_hari_ini", label: "Sewa", num: true, value: (x) => x.sewa_sd_hari_ini },
+  { key: "untung", label: "Untung bersih", num: true, value: (x) => x.untung },
+  { key: "biaya_menganggur", label: "Biaya menganggur", num: true, value: (x) => x.biaya_menganggur },
+];
+
+async function renderProfit(box, P, openUnit) {
+  const s = await get(`/units/summary?${P.qs}`);
+  const current = s.period.from <= s.today && s.today <= s.period.to;
   box.innerHTML = `
     <details class="panel legend" ${sessionStorage.getItem("unitsLegendClosed") ? "" : "open"} id="uLegend"><summary><b>Cara baca</b></summary><ul>
       <li><b>Biaya per hari</b> = (sewa + biaya tetap lain) dibagi jumlah hari bulan itu. Contoh: sewa 15.000.000 di bulan 30 hari = 500.000 per hari.</li>
       <li><b>Kontribusi trip</b> = selling - cost job (uang jalan, sudah termasuk tol, makan, gaji driver). <b>Untung trip</b> = kontribusi - sewa hari-hari trip itu
         (gate out sampai gate in). Kalau satu hari dipakai dua job, sewa hari itu dibagi dua.</li>
-      <li><b>Untung bersih unit</b> = kontribusi semua trip yang berangkat bulan ini - sewa bulan ini${current ? " sampai hari ini" : ""}. Sewa tetap dibayar walau unit
+      <li><b>Untung bersih unit</b> = kontribusi semua trip yang berangkat di periode ini - sewa periode ini${current ? " sampai hari ini" : ""}. Sewa tetap dibayar walau unit
         menganggur, jadi <b>biaya menganggur</b> = sewa di hari tanpa trip.</li>
-      <li><b>Titik impas</b> = berapa trip sebulan (dengan kontribusi rata-rata bulan ini) supaya sewa tertutup.</li>
+      <li><b>Titik impas</b> = berapa trip dalam periode ini (dengan kontribusi rata-rata periode ini) supaya sewa periode ini tertutup.</li>
+      <li>Ganti <b>Periode</b> di kanan atas: per bulan, rentang tanggal bebas, atau keseluruhan. Untuk rentang / keseluruhan muncul tabel tren per bulan.</li>
       <li>Klik &#9662; di judul kolom untuk filter / urut seperti Excel. Ringkasan di atas dan Export Excel mengikuti yang tampil.</li></ul></details>
     <div class="tiles" id="uTiles"></div>
     <div class="panel"><h2>Per unit <span class="hint">klik unit untuk melihat trip dan kalendernya</span><span class="spacer"></span>
         <button class="small" id="uAllTrips">Semua trip bulan ini</button><button class="small" id="uExport">Export Excel</button></h2>
       <div id="uTable"></div></div>
+    <div id="uMonths"></div>
     <div id="uDetail"></div>`;
   document.getElementById("uLegend").addEventListener("toggle", (e) => {
     if (e.target.open) sessionStorage.removeItem("unitsLegendClosed"); else sessionStorage.setItem("unitsLegendClosed", "1");
@@ -105,19 +148,19 @@ async function renderProfit(box, month, openUnit) {
     box.querySelectorAll("[data-unit]").forEach((x) => x.classList.toggle("selected", x.dataset.unit === String(id)));
     const st = JSON.parse(sessionStorage.getItem("units") || "{}");
     sessionStorage.setItem("units", JSON.stringify({ ...st, unit: String(id) }));
-    renderDetail(id, month);
+    renderDetail(id, P);
   };
   const tiles = (u) => {
     const hb = sumOf(u, "hari_berjalan");
     document.getElementById("uTiles").innerHTML =
-      tile(`Sewa ${monthName(month)}`, sumOf(u, "sewa_bulan"), "out", `${u.length} unit`) +
+      tile(`Sewa ${P.label}`, sumOf(u, current ? "sewa_sd_hari_ini" : "sewa_bulan"), "out", `${u.length} unit${current ? ", sampai hari ini" : ""}`) +
       tile("Kontribusi trip", sumOf(u, "kontribusi"), "in", `${sumOf(u, "trips")} trip, selling ${rp(sumOf(u, "selling"))}`) +
       tile(current ? "Untung bersih s/d hari ini" : "Untung bersih", sumOf(u, "untung"), sumOf(u, "untung") >= 0 ? "plus" : "minus", "kontribusi - sewa") +
       tile("Biaya menganggur", sumOf(u, "biaya_menganggur"), sumOf(u, "biaya_menganggur") > 0 ? "warn" : "", `${sumOf(u, "hari_menganggur")} hari unit tidak jalan`) +
       tile("Utilisasi", hb ? Math.round((sumOf(u, "hari_jalan") / hb) * 100) : 0, "", "% hari unit dipakai trip");
   };
   const grid = xlTable(document.getElementById("uTable"), {
-    id: "unit-summary", columns: SUMMARY_COLS, empty: `Belum ada unit sewa di ${monthName(month)}. Tambahkan di tab Kontrak sewa.`,
+    id: "unit-summary", columns: SUMMARY_COLS, empty: `Belum ada unit sewa di periode ${P.label}. Tambahkan di tab Kontrak sewa.`,
     rowHtml: (x) => `<tr class="click ${String(x.vehicle_id) === String(openUnit) ? "selected" : ""}" data-unit="${x.vehicle_id}">
       <td><b>${esc(x.plate_number)}</b></td><td>${esc(x.truck_type)}</td><td>${esc(x.pemilik || "-")}</td>
       <td class="num">${rp(x.sewa_bulanan)}</td><td class="num">${rp(x.biaya_per_hari)}</td>
@@ -135,19 +178,48 @@ async function renderProfit(box, month, openUnit) {
   document.getElementById("uAllTrips").onclick = () => open("all");
   document.getElementById("uExport").onclick = () => {
     if (!grid.visible().length) return toast("Tidak ada unit yang tampil", true);
-    downloadExcel({ month, vehicle_ids: grid.visible().map((x) => x.vehicle_id) });
+    downloadExcel({ ...P.body, vehicle_ids: grid.visible().map((x) => x.vehicle_id) });
   };
-  if (openUnit === "all" || s.units.some((x) => String(x.vehicle_id) === String(openUnit))) renderDetail(openUnit, month);
+  // tren per bulan (rentang / keseluruhan)
+  if (s.per_bulan.length) {
+    const months = [...new Set(s.per_bulan.map((x) => x.bulan))];
+    const agg = months.map((m) => {
+      const r = s.per_bulan.filter((x) => x.bulan === m);
+      const hb = sumOf(r, "hari_berjalan");
+      return { m, units: r.length, trips: sumOf(r, "trips"), selling: sumOf(r, "selling"), uang_jalan: sumOf(r, "uang_jalan"), kontribusi: sumOf(r, "kontribusi"),
+        sewa: sumOf(r, "sewa_sd_hari_ini"), untung: sumOf(r, "untung"), idle: sumOf(r, "biaya_menganggur"), util: hb ? Math.round((sumOf(r, "hari_jalan") / hb) * 100) : 0 };
+    });
+    document.getElementById("uMonths").innerHTML = `
+      <div class="panel"><h2>Tren per bulan <span class="hint">semua unit, ${esc(P.label)}</span></h2>
+        ${table(`<th>Bulan</th><th class="num">Unit</th><th class="num">Trip</th><th class="num">Selling</th><th class="num">Uang jalan</th><th class="num">Kontribusi</th>
+          <th class="num">Sewa</th><th class="num">Untung bersih</th><th class="num">Biaya menganggur</th><th class="num">Utilisasi</th>`,
+          agg.map((a) => `<tr><td><b>${esc(monthName(a.m))}</b></td><td class="num">${a.units}</td><td class="num">${a.trips}</td><td class="num">${rp(a.selling)}</td>
+            <td class="num">${rp(a.uang_jalan)}</td><td class="num">${rp(a.kontribusi)}</td><td class="num">${rp(a.sewa)}</td><td class="num"><b>${pl(a.untung)}</b></td>
+            <td class="num">${rp(a.idle)}</td><td class="num">${a.util}%</td></tr>`).join(""), "Belum ada data",
+          `<tr><td>Total</td><td></td><td class="num">${sumOf(agg, "trips")}</td><td class="num">${rp(sumOf(agg, "selling"))}</td><td class="num">${rp(sumOf(agg, "uang_jalan"))}</td>
+            <td class="num">${rp(sumOf(agg, "kontribusi"))}</td><td class="num">${rp(sumOf(agg, "sewa"))}</td><td class="num"><b>${pl(sumOf(agg, "untung"))}</b></td>
+            <td class="num">${rp(sumOf(agg, "idle"))}</td><td></td></tr>`)}
+        <h3>Per unit per bulan</h3><div id="uMonthTable"></div>
+      </div>`;
+    xlTable(document.getElementById("uMonthTable"), {
+      id: "unit-per-bulan", columns: PER_BULAN_COLS, empty: "Belum ada data",
+      rowHtml: (x) => `<tr><td>${esc(monthName(x.bulan))}</td><td><b>${esc(x.plate_number)}</b></td><td class="num">${x.hari_jalan}</td>
+        <td class="num">${x.hari_menganggur}</td><td class="num">${x.utilisasi}%</td><td class="num">${x.trips}</td><td class="num">${rp(x.selling)}</td>
+        <td class="num">${rp(x.uang_jalan)}</td><td class="num">${rp(x.kontribusi)}</td><td class="num">${rp(x.sewa_sd_hari_ini)}</td>
+        <td class="num"><b>${pl(x.untung)}</b></td><td class="num">${rp(x.biaya_menganggur)}</td></tr>`,
+    }).setRows(s.per_bulan);
+  }
+  if (openUnit === "all" || s.units.some((x) => String(x.vehicle_id) === String(openUnit))) renderDetail(openUnit, P);
 }
 
-async function renderDetail(vehicleId, month) {
+async function renderDetail(vehicleId, P) {
   const box = document.getElementById("uDetail");
   box.innerHTML = `<p class="muted">Memuat...</p>`;
   const all = vehicleId === "all";
-  const d = all ? await get(`/units/trips?month=${month}`) : await get(`/units/${vehicleId}/detail?month=${month}`);
+  const d = all ? await get(`/units/trips?${P.qs}`) : await get(`/units/${vehicleId}/detail?${P.qs}`);
   const dayClass = (x) => !x.day_cost && x.day_cost !== 0 ? "none" : x.day > d.today ? "future" : x.jobs ? "used" : "idle";
   box.innerHTML = `
-    <div class="panel"><h2>${all ? "Semua trip unit sewa" : esc(d.vehicle.plate_number)} &middot; ${esc(monthName(month))}
+    <div class="panel"><h2>${all ? "Semua trip unit sewa" : esc(d.vehicle.plate_number)} &middot; ${esc(P.label)}
         ${all ? "" : `<span class="hint">${d.contracts.map((c) => `sewa ${rp(c.monthly_rent)}${c.other_monthly_cost > 0 ? ` + biaya lain ${rp(c.other_monthly_cost)}` : ""} / bulan dari ${esc(c.partner || "-")}, ${tgl(c.date_start)} s/d ${c.date_end ? tgl(c.date_end) : "sekarang"}`).join("; ")}</span>`}
         <span class="spacer"></span><button class="small" id="tripExport">Export Excel</button></h2>
       ${all ? "" : `<div class="unit-cal">${d.days.map((x) => `<div class="day ${dayClass(x)}" title="${esc(x.day)}${x.day_cost ? ` · sewa ${rp(x.day_cost)}` : " · di luar kontrak"}${x.jobs ? ` · ${x.jobs}` : dayClass(x) === "idle" ? " · menganggur" : ""}">
@@ -181,7 +253,7 @@ async function renderDetail(vehicleId, month) {
   grid.setRows(d.trips);
   document.getElementById("tripExport").onclick = () => {
     if (!grid.visible().length) return toast("Tidak ada trip yang tampil", true);
-    downloadExcel({ month, vehicle_id: all ? undefined : Number(vehicleId), job_ids: grid.visible().map((x) => x.job_id) });
+    downloadExcel({ ...P.body, vehicle_id: all ? undefined : Number(vehicleId), job_ids: grid.visible().map((x) => x.job_id) });
   };
   box.scrollIntoView({ behavior: "smooth", block: "start" });
 }
@@ -226,14 +298,16 @@ async function renderContracts(box) {
 }
 
 // ---------------------------------------------------------------- tagihan sewa
-async function renderBills(box, month) {
-  const list = await get(`/units/rent-bills?month=${month}`);
+async function renderBills(box, P) {
+  const month = P.month;
+  const list = await get(`/units/rent-bills?${P.qs}`);
   const total = (k) => list.filter((b) => b.state === "posted").reduce((a, b) => a + Number(b[k]), 0);
   box.innerHTML = `
-    <div class="tiles">${tile(`Tagihan sewa ${monthName(month)}`, total("amount"), "out", `${list.filter((b) => b.state === "posted").length} tagihan`)}
+    <div class="tiles">${tile(`Tagihan sewa ${P.label}`, total("amount"), "out", `${list.filter((b) => b.state === "posted").length} tagihan`)}
       ${tile("Sudah dibayar", total("paid"), "")}${tile("Belum dibayar", total("residual"), total("residual") > 0 ? "warn" : "")}</div>
-    <div class="panel"><h2>Tagihan sewa ${esc(monthName(month))}
-        ${canFinance() ? `<span class="spacer"></span><button class="primary small" id="genBills">Buat tagihan sewa ${esc(monthName(month))}</button>` : ""}</h2>
+    <div class="panel"><h2>Tagihan sewa ${esc(P.label)}
+        ${canFinance() && P.mode === "month" ? `<span class="spacer"></span><button class="primary small" id="genBills">Buat tagihan sewa ${esc(monthName(month))}</button>` : ""}</h2>
+      ${P.mode !== "month" ? `<div class="note-box">Untuk membuat tagihan, pilih periode <b>Per bulan</b> lalu bulannya.</div>` : ""}
       ${table(`<th>Nomor</th><th>Unit</th><th>Pemilik</th><th class="num">Hari</th><th class="num">Tagihan</th><th class="num">Dibayar</th><th class="num">Sisa</th><th>Jatuh tempo</th><th>Status</th><th></th>`,
         list.map((b) => `<tr class="${b.state === "cancelled" ? "rev" : ""}"><td><b>${esc(b.number)}</b></td><td>${esc(b.plate_number)}</td><td>${esc(b.partner || "-")}</td>
           <td class="num">${b.days}</td><td class="num">${rp(b.amount)}</td><td class="num">${rp(b.paid)}</td><td class="num">${rp(b.residual)}</td>

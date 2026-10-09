@@ -401,6 +401,16 @@ try {
     const u = sum.units.find((x) => x.plate_number === "B 1234 HQ");
     assert.deepEqual([u.hari_kontrak, u.hari_jalan, u.hari_menganggur, u.biaya_per_hari, u.trips, u.selling, u.uang_jalan, u.kontribusi, u.sewa_bulan, u.untung, u.biaya_menganggur, u.titik_impas],
       [30, 4, 26, 500000, 2, 17000000, 5000000, 12000000, 15000000, -3000000, 13000000, 2.5]);
+    // periode rentang & keseluruhan + rincian per bulan
+    const rangeSum = await viewer.call("GET", "/units/summary?from=2026-09-01&to=2026-10-31");
+    assert.equal(rangeSum.period.kind, "range");
+    assert.ok(rangeSum.per_bulan.some((x) => x.bulan === "2026-09" && x.plate_number === "B 1234 HQ" && x.trips === 2 && x.untung === -3000000));
+    assert.ok(rangeSum.per_bulan.some((x) => x.bulan === "2026-10" && x.plate_number === "B 1234 HQ"));
+    const allSum = await viewer.call("GET", "/units/summary?all=1");
+    assert.deepEqual([allSum.period.kind, allSum.period.from], ["all", "2026-09-01"]);
+    assert.equal(allSum.units.find((x) => x.plate_number === "B 1234 HQ").trips, 2);
+    assert.match(await viewer.call("GET", "/units/summary?from=2026-10-31&to=2026-09-01", null, 400), /Tanggal awal/);
+    assert.ok((await viewer.call("GET", "/units/rent-bills?all=1")).length >= 0);
     const det = await viewer.call("GET", `/units/${u.vehicle_id}/detail?month=2026-09`);
     assert.deepEqual(det.trips.map((x) => [x.job_number, x.days, x.rent_cost, x.untung]),
       [[T1.job_number, 3, 1250000, 4750000], [T2.job_number, 2, 750000, 5250000]]);

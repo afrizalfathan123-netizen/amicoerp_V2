@@ -18,10 +18,37 @@ const monthRange = (m) => {
   return { month: v, from: `${v}-01`, to: `${v}-${String(last).padStart(2, "0")}`, days: last };
 };
 const normPlate = (p) => String(p || "").replace(/\s+/g, " ").trim().toUpperCase();
+const DATE = /^\d{4}-\d{2}-\d{2}$/;
+const lastDay = (ym) => { const [y, m] = ym.split("-").map(Number); return `${ym}-${String(new Date(Date.UTC(y, m, 0)).getUTCDate()).padStart(2, "0")}`; };
 
-// trip unit sewa yang menyentuh bulan itu (satu unit, atau semua unit kalau vehicleId kosong)
-export async function unitTrips(q, month, vehicleId = null) {
-  const rg = monthRange(month);
+// periode laporan: ?month=YYYY-MM (default bulan ini) | ?from=YYYY-MM-DD&to=YYYY-MM-DD | ?all=1 (sejak kontrak pertama s/d hari ini)
+export async function periodOf(q, src = {}) {
+  if (src.all === "1" || src.all === true || src.all === 1) {
+    const [r] = await q.query("select min(date_start) as d from vehicle_contract");
+    const from = r?.d && r.d <= today() ? r.d : `${today().slice(0, 7)}-01`;
+    return { kind: "all", from, to: today(), label: "Keseluruhan" };
+  }
+  if (DATE.test(src.from || "") && DATE.test(src.to || "")) {
+    if (src.from > src.to) fail("Tanggal awal setelah tanggal akhir");
+    return { kind: "range", from: src.from, to: src.to, label: `${src.from} s/d ${src.to}` };
+  }
+  const m = monthRange(src.month);
+  return { kind: "month", ...m, label: m.month };
+}
+// bulan-bulan di dalam periode (bulan awal / akhir dipotong sesuai periode)
+const monthsOf = (pr) => {
+  const out = [];
+  for (let ym = pr.from.slice(0, 7); ym <= pr.to.slice(0, 7);) {
+    out.push({ month: ym, from: ym === pr.from.slice(0, 7) ? pr.from : `${ym}-01`, to: ym === pr.to.slice(0, 7) ? pr.to : lastDay(ym) });
+    const [y, m] = ym.split("-").map(Number);
+    ym = m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`;
+  }
+  return out;
+};
+
+// trip unit sewa yang menyentuh periode itu (satu unit, atau semua unit kalau vehicleId kosong). rg = { from, to } atau "YYYY-MM"
+export async function unitTrips(q, period, vehicleId = null) {
+  const rg = typeof period === "object" && period ? period : monthRange(period);
   const rows = await q.query(
     `select t.job_id, t.vehicle_id, v.plate_number, j.job_number, j.job_date, j.gate_out_at, j.gate_in_at, j.trip_type, j.driver1_name,
             j.do_number, j.delivery_scope, cu.name as customer, lp.code as pol, ld.code as pod, t.day_from, t.day_to, t.masih_jalan,
@@ -75,9 +102,9 @@ function addSheet(wb, name, cols, rows, totalKeys = []) {
   return ws;
 }
 
-// untung rugi semua unit sewa untuk satu bulan
-export async function unitSummary(q, month) {
-  const r = monthRange(month);
+// untung rugi semua unit sewa dalam satu periode. period = { from, to } atau "YYYY-MM"
+export async function unitSummary(q, period) {
+  const r = typeof period === "object" && period ? period : monthRange(period);
   const rows = await q.query(
     `with days as (
        select vd.vehicle_id, vd.day, vd.day_cost,
@@ -119,29 +146,47 @@ export async function unitSummary(q, month) {
     x.untung = money(x.kontribusi - x.sewa_sd_hari_ini);
     x.utilisasi = x.hari_berjalan ? Math.round((x.hari_jalan / x.hari_berjalan) * 100) : 0;
     const avg = x.trips ? x.kontribusi / x.trips : 0;
-    x.titik_impas = avg > 0 ? Math.round((x.sewa_bulan / avg) * 10) / 10 : null;   // trip per bulan agar sewa tertutup
+    x.titik_impas = avg > 0 ? Math.round((x.sewa_bulan / avg) * 10) / 10 : null;   // trip dalam periode agar sewa tertutup
   }
   return { ...r, today: today(), units: rows };
+}
+
+// ringkasan periode + rincian per bulan (kalau periode lebih dari satu bulan)
+async function summaryWithMonths(q, pr) {
+  const s = await unitSummary(q, pr);
+  const months = monthsOf(pr);
+  s.period = pr;
+  s.per_bulan = [];
+  if (months.length > 1 || pr.kind !== "month") {
+    for (const m of months) {
+      for (const u of (await unitSummary(q, m)).units) s.per_bulan.push({ bulan: m.month, ...u });
+    }
+  }
+  return s;
 }
 
 export default function unitRoutes(db) {
   const r = express.Router();
   const read = requireRole(ROLES.READ);
 
-  r.get("/units/summary", read, route((req) => unitSummary(db, req.query.month)));
-  // semua trip unit sewa di bulan itu (untuk analisa lintas unit)
-  r.get("/units/trips", read, route(async (req) => ({ ...monthRange(req.query.month), trips: await unitTrips(db, req.query.month, req.query.vehicle_id || null) })));
+  r.get("/units/summary", read, route(async (req) => summaryWithMonths(db, await periodOf(db, req.query))));
+  // semua trip unit sewa dalam periode (untuk analisa lintas unit)
+  r.get("/units/trips", read, route(async (req) => {
+    const pr = await periodOf(db, req.query);
+    return { ...pr, period: pr, trips: await unitTrips(db, pr, req.query.vehicle_id || null) };
+  }));
 
   // Excel: RINGKASAN UNIT, TRIP, HARIAN. POST { month, vehicle_ids?, job_ids? } = persis yang tampil setelah filter di layar.
   const exportUnits = async (req, res, b) => {
     try {
-      const rg = monthRange(b.month);
+      const rg = await periodOf(db, b);
       const keepV = Array.isArray(b.vehicle_ids) && b.vehicle_ids.length ? new Set(b.vehicle_ids.map(Number)) : null;
       const keepJ = Array.isArray(b.job_ids) && b.job_ids.length ? new Set(b.job_ids.map(Number)) : null;
-      let units = (await unitSummary(db, rg.month)).units;
+      const sum = await summaryWithMonths(db, rg);
+      let units = sum.units;
       if (b.vehicle_id) units = units.filter((u) => u.vehicle_id === Number(b.vehicle_id));
       if (keepV) units = units.filter((u) => keepV.has(u.vehicle_id));
-      let trips = await unitTrips(db, rg.month, b.vehicle_id || null);
+      let trips = await unitTrips(db, rg, b.vehicle_id || null);
       if (keepJ) trips = trips.filter((t) => keepJ.has(t.job_id));
       else if (keepV) trips = trips.filter((t) => keepV.has(t.vehicle_id));
       const vids = [...new Set((b.vehicle_id ? [Number(b.vehicle_id)] : units.map((u) => u.vehicle_id)))];
@@ -158,8 +203,16 @@ export default function unitRoutes(db) {
         ["hari_kontrak", "hari_jalan", "hari_menganggur", "trips", "selling", "uang_jalan", "kontribusi", "sewa_bulan", "sewa_sd_hari_ini", "untung", "biaya_menganggur"]);
       addSheet(wb, "TRIP", XL_TRIPS, trips, ["days", "selling", "cost", "kontribusi", "rent_cost", "untung"]);
       addSheet(wb, "HARIAN", XL_DAYS, days, ["day_cost"]);
+      if (sum.per_bulan.length) {
+        let pb = sum.per_bulan;
+        if (b.vehicle_id) pb = pb.filter((u) => u.vehicle_id === Number(b.vehicle_id));
+        if (keepV) pb = pb.filter((u) => keepV.has(u.vehicle_id));
+        addSheet(wb, "PER BULAN", [["BULAN", "bulan", 10], ...XL_SUMMARY], pb,
+          ["hari_jalan", "hari_menganggur", "trips", "selling", "uang_jalan", "kontribusi", "sewa_sd_hari_ini", "untung", "biaya_menganggur"]);
+      }
       const plate = b.vehicle_id && units[0] ? `-${units[0].plate_number.replace(/\s/g, "")}` : "";
-      const name = `unit-sewa-${rg.month}${plate}.xlsx`;
+      const tag = rg.kind === "all" ? "keseluruhan" : rg.kind === "range" ? `${rg.from}_sd_${rg.to}` : rg.month;
+      const name = `unit-sewa-${tag}${plate}.xlsx`;
       res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
       res.setHeader("Content-Disposition", `attachment; filename="${name}"`);
       await wb.xlsx.write(res);
@@ -174,10 +227,10 @@ export default function unitRoutes(db) {
   // rincian satu unit: trip bulan itu + kalender hari (dipakai / menganggur)
   r.get("/units/:vehicleId/detail", read, route(async (req) => {
     const id = Number(req.params.vehicleId);
-    const rg = monthRange(req.query.month);
+    const rg = await periodOf(db, req.query);
     const [vehicle] = await db.query("select * from vehicle where id = $1", [id]);
     if (!vehicle) fail("Unit tidak ditemukan", 404);
-    const trips = await unitTrips(db, rg.month, id);
+    const trips = await unitTrips(db, rg, id);
     const days = await db.query(
       `select to_char(g.d, 'YYYY-MM-DD') as day, vd.day_cost,
               (select string_agg(j.job_number, ', ' order by j.job_number) from v_vehicle_trip t join job j on j.id = t.job_id
@@ -189,7 +242,7 @@ export default function unitRoutes(db) {
       `select c.*, p.name as partner from vehicle_contract c left join res_partner p on p.id = c.partner_id
        where c.vehicle_id = $1 order by c.date_start`, [id]);
     for (const x of days) if (x.day_cost != null) x.day_cost = Math.round(x.day_cost);
-    return { ...rg, today: today(), vehicle, trips, days, contracts };
+    return { ...rg, period: rg, today: today(), vehicle, trips, days: days.slice(-400), contracts };
   }));
 
   // ---------------------------------------------------------------- kontrak sewa
@@ -242,8 +295,9 @@ export default function unitRoutes(db) {
   r.put("/units/contracts/:id", requireRole(ROLES.FINANCE), route((req) => db.tx(async (t) => ({ id: await saveContract(t, req, Number(req.params.id)) }))));
 
   // ---------------------------------------------------------------- tagihan sewa bulanan
-  r.get("/units/rent-bills", read, route((req) => {
-    const rg = monthRange(req.query.month);
+  r.get("/units/rent-bills", read, route(async (req) => {
+    const pr = await periodOf(db, req.query);
+    const rg = { from: `${pr.from.slice(0, 7)}-01`, to: pr.to };
     return db.query(
       `select b.*, v.plate_number, v.truck_type, p.name as partner, c.monthly_rent,
               (select json_agg(json_build_object('id', x.id, 'pay_date', x.pay_date, 'amount', x.amount, 'note', x.note,
@@ -252,8 +306,8 @@ export default function unitRoutes(db) {
                from vehicle_rent_payment x left join res_bank_account ba on ba.id = x.bank_account_id where x.bill_id = b.id) as payments
        from v_vehicle_rent_bill b join vehicle_contract c on c.id = b.contract_id join vehicle v on v.id = c.vehicle_id
        left join res_partner p on p.id = c.partner_id
-       where ($1::text = 'all' or b.period = $2::date) order by b.period desc, v.plate_number`,
-      [req.query.month === "all" ? "all" : "", rg.from]);
+       where ($1::text = 'all' or b.period between $2::date and $3::date) order by b.period desc, v.plate_number`,
+      [pr.kind === "all" ? "all" : "", rg.from, rg.to]);
   }));
 
   // buat tagihan sewa untuk semua kontrak yang berjalan di bulan itu (prorata hari), yang sudah ada dilewati

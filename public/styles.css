@@ -374,3 +374,6 @@ tr.selected td { background: #f6e2c2; }
 .trip-total { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: baseline; font-size: 13px; margin: 8px 0 4px; padding: 8px 10px;
   background: #fdf0dc; border-radius: 8px; }
 .trip-total span { white-space: nowrap; }
+.period-pick { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; }
+.period-pick label { min-width: 0; }
+.period-pick select, .period-pick input { width: auto; }
