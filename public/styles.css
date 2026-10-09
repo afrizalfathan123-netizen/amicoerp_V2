@@ -354,7 +354,7 @@ th.xl-sel, td.xl-sel { width: 28px; }
 .fox-layer { position: fixed; bottom: 0; height: 112px; overflow: hidden; pointer-events: none; z-index: 6; }
 .fox-layer[hidden] { display: none; }
 .fox { position: absolute; left: 0; bottom: 0; width: 200px; height: 112px; image-rendering: pixelated; cursor: pointer; pointer-events: none;
-  filter: drop-shadow(0 2px 0 rgba(42,26,14,.12)); will-change: transform; }
+  will-change: transform; contain: strict; }
 @media print { .fox-layer { display: none !important; } }
 
 /* unit sewa */

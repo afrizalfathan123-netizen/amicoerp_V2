@@ -101,7 +101,7 @@ export function startFox() {
 
   function schedule(ms) {
     clearTimeout(timer);
-    timer = setTimeout(spawnEvent, ms ?? rnd(15000, 55000));      // jeda acak, tidak pernah sama
+    timer = setTimeout(spawnEvent, ms ?? rnd(20000, 60000));      // jeda acak, tidak pernah sama
   }
 
   // ------------------------------------------------------------ membuat rubah
@@ -109,6 +109,7 @@ export function startFox() {
     const cv = document.createElement("canvas");
     cv.width = CW * S; cv.height = CH * S;
     cv.className = "fox";
+    cv.style.zIndex = String(10 + (nextId % 7));
     layer.appendChild(cv);
     const ctx = cv.getContext("2d");
     ctx.imageSmoothingEnabled = false;
@@ -333,6 +334,8 @@ export function startFox() {
   }
 
   // ------------------------------------------------------------ loop animasi
+  // Ringan: tiap pose digambar SEKALI ke kanvas cadangan (cache per warna + pose + arah), lalu cukup 1x drawImage.
+  // Kanvas rubah hanya digambar ulang kalau tampilannya berubah; posisi cukup lewat CSS transform.
   function tick(now) {
     // timestamp rAF bisa sedikit lebih awal dari performance.now() -> jangan negatif
     const dt = Math.max(0, Math.min(0.05, (now - last) / 1000));
@@ -348,51 +351,89 @@ export function startFox() {
     }
     for (const a of actors) {
       draw(a, frameFor(a, a.tasks[0]), a.lift || 0, a.tasks[0]);
-      a.cv.style.transform = `translate3d(${Math.round(a.x - CX * S)}px, 0, 0)`;
-      a.cv.style.zIndex = String(10 + Math.round(a.id % 7));
-      a.cv.style.pointerEvents = a.tasks[0]?.type === "idle" ? "auto" : "none";     // hanya bisa diklik saat diam
+      const tx = Math.round(a.x - CX * S);
+      if (tx !== a.tx) { a.tx = tx; a.cv.style.transform = `translate3d(${tx}px, 0, 0)`; }
+      const pe = a.tasks[0]?.type === "idle" ? "auto" : "none";     // hanya bisa diklik saat diam
+      if (pe !== a.pe) { a.pe = pe; a.cv.style.pointerEvents = pe; }
     }
     if (!actors.length) { running = false; layer.hidden = true; return; }
     requestAnimationFrame(tick);
   }
 
-  function draw(a, name, lift, task) {
-    const { ctx, pal } = a;
-    const px = (x, y, color, size = S) => { ctx.fillStyle = color; ctx.fillRect(x * size, y * size, size, size); };
-    ctx.clearRect(0, 0, a.cv.width, a.cv.height);
-    const spr = FOX[name] || FOX.stand;
-    const rows = spr.rows;
+  const spriteCache = new Map();
+  const palIndex = new Map(VARIANTS.map((p, i) => [p, i]));
+  function spriteCanvas(pal, name, flip) {
+    const key = `${palIndex.get(pal) ?? 0}|${name}|${flip ? 1 : 0}`;
+    let c = spriteCache.get(key);
+    if (c) return c;
+    const rows = (FOX[name] || FOX.stand).rows;
     const h = rows.length, w = rows[0].length;
-    const top = GY - h + 1 - lift;
-    const flip = a.dir > 0;                       // sprite menghadap kiri; ke kanan = dicerminkan
-    const left = flip ? CX - (w - 1 - spr.ax) : CX - spr.ax;
-    if (lift > 1) for (let x = -8; x <= 8; x++) px(CX + x, GY + 1, "rgba(42,26,14,.16)");
+    c = document.createElement("canvas");
+    c.width = w * S; c.height = h * S;
+    const x = c.getContext("2d");
     for (let y = 0; y < h; y++) {
       const r = rows[y];
-      for (let x = 0; x < w; x++) {
-        const ch = r[x];
+      for (let i = 0; i < w; i++) {
+        const ch = r[i];
         if (ch === ".") continue;
-        px(flip ? left + (w - 1 - x) : left + x, top + y, pal[ch]);
+        x.fillStyle = pal[ch];
+        x.fillRect((flip ? w - 1 - i : i) * S, y * S, S, S);
       }
     }
+    spriteCache.set(key, c);
+    return c;
+  }
+  const emoteCache = new Map();
+  function emoteCanvas(name, dir) {
+    const key = `${name}|${dir}`;
+    let c = emoteCache.get(key);
+    if (c) return c;
+    const e = EMO[name];
+    c = document.createElement("canvas");
+    c.width = 7 * E; c.height = 8 * E;
+    const x = c.getContext("2d");
+    const px = (i, j, color) => { x.fillStyle = color; x.fillRect(i * E, j * E, E, E); };
+    for (let j = 0; j < 7; j++) for (let i = 0; i < 7; i++) {
+      if ((i === 0 || i === 6) && (j === 0 || j === 6)) continue;
+      px(i, j, i === 0 || j === 0 || i === 6 || j === 6 ? "#2A1A0E" : "#FFFFFF");
+    }
+    px(dir > 0 ? 1 : 5, 7, "#2A1A0E");
+    e.g.forEach((r, j) => [...r].forEach((ch, i) => ch === "x" && px(1 + i, 1 + j, e.c)));
+    emoteCache.set(key, c);
+    return c;
+  }
+
+  function draw(a, name, lift, task) {
+    const flip = a.dir > 0;                       // sprite menghadap kiri; ke kanan = dicerminkan
+    const zz = a.emote === "z" ? Math.floor(a.t * 2) % 2 : 0;
+    const bfTick = task?.chase ? Math.floor(a.t * 20) : -1;
+    // tidak ada yang berubah -> tidak usah menggambar
+    const sig = `${name}|${flip}|${lift}|${a.emote || ""}|${zz}|${bfTick}`;
+    if (sig === a.sig) return;
+    a.sig = sig;
+    const { ctx } = a;
+    const spr = FOX[name] || FOX.stand;
+    const h = spr.rows.length, w = spr.rows[0].length;
+    const top = GY - h + 1 - lift;
+    const left = flip ? CX - (w - 1 - spr.ax) : CX - spr.ax;
+    ctx.clearRect(0, 0, a.cv.width, a.cv.height);
+    if (lift > 1) { ctx.fillStyle = "rgba(42,26,14,.16)"; ctx.fillRect((CX - 8) * S, (GY + 1) * S, 17 * S, S); }
+    ctx.drawImage(spriteCanvas(a.pal, name, flip), left * S, top * S);
     if (task?.chase) {
       const bf = BUTTERFLY[Math.floor(a.t * 9) % 2];
       const bx = CX + a.dir * (16 + Math.round(Math.sin(a.t * 2.3) * 3)) - 2;
       const by = top + 2 + Math.round(Math.sin(a.t * 6) * 4);
-      bf.forEach((r, y) => [...r].forEach((ch, x) => ch !== "." && px(bx + x, by + y, BF_PAL[ch])));
+      bf.forEach((r, y) => [...r].forEach((ch, x) => {
+        if (ch === ".") return;
+        ctx.fillStyle = BF_PAL[ch];
+        ctx.fillRect((bx + x) * S, (by + y) * S, S, S);
+      }));
     }
     if (a.emote && EMO[a.emote] && lift < 4) {
-      const e = EMO[a.emote];
       const headX = CX * S + (a.dir > 0 ? 6 : -6) * S;
       const bx0 = Math.round(headX / E) + (a.dir > 0 ? 1 : -8);
-      const by0 = Math.max(0, Math.round((top * S) / E) - 8 - (a.emote === "z" ? Math.floor(a.t * 2) % 2 : 0));
-      for (let y = 0; y < 7; y++) for (let x = 0; x < 7; x++) {
-        const edge = x === 0 || y === 0 || x === 6 || y === 6;
-        if ((x === 0 || x === 6) && (y === 0 || y === 6)) continue;
-        px(bx0 + x, by0 + y, edge ? "#2A1A0E" : "#FFFFFF", E);
-      }
-      px(bx0 + (a.dir > 0 ? 1 : 5), by0 + 7, "#2A1A0E", E);
-      e.g.forEach((r, y) => [...r].forEach((ch, x) => ch === "x" && px(bx0 + 1 + x, by0 + 1 + y, e.c, E)));
+      const by0 = Math.max(0, Math.round((top * S) / E) - 8 - zz);
+      ctx.drawImage(emoteCanvas(a.emote, a.dir > 0 ? 1 : -1), bx0 * E, by0 * E);
     }
   }
 
