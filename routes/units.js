@@ -1,0 +1,332 @@
+// Unit sewa: kontrak sewa bulanan per unit (plat), untung rugi per unit per bulan dan per trip, tagihan sewa bulanan.
+//
+// Aturan hitung ada di migrasi 009 (v_vehicle_day, v_vehicle_trip, v_vehicle_trip_cost). Ringkasnya:
+//   biaya per hari = (sewa + biaya tetap lain) / jumlah hari bulan itu
+//   kontribusi trip = selling - cost job (uang jalan); untung trip = kontribusi - sewa teralokasi (hari gate out s/d gate in)
+//   untung unit sebulan = kontribusi trip yang berangkat bulan itu - sewa hari-hari bulan itu (s/d hari ini)
+//   biaya menganggur = sewa di hari tanpa trip
+// Kontrak satu unit tidak boleh tumpang tindih tanggalnya. Tagihan sewa: satu per kontrak per bulan (prorata hari).
+import express from "express";
+import ExcelJS from "exceljs";
+import { requireRole, ROLES } from "../lib/auth.js";
+import { route, fail, money, rupiah, today, insertRow, nextNumber, audit } from "../lib/util.js";
+
+const monthRange = (m) => {
+  const v = /^\d{4}-\d{2}$/.test(String(m || "")) ? m : today().slice(0, 7);
+  const [y, mo] = v.split("-").map(Number);
+  const last = new Date(Date.UTC(y, mo, 0)).getUTCDate();
+  return { month: v, from: `${v}-01`, to: `${v}-${String(last).padStart(2, "0")}`, days: last };
+};
+const normPlate = (p) => String(p || "").replace(/\s+/g, " ").trim().toUpperCase();
+
+// trip unit sewa yang menyentuh bulan itu (satu unit, atau semua unit kalau vehicleId kosong)
+export async function unitTrips(q, month, vehicleId = null) {
+  const rg = monthRange(month);
+  const rows = await q.query(
+    `select t.job_id, t.vehicle_id, v.plate_number, j.job_number, j.job_date, j.gate_out_at, j.gate_in_at, j.trip_type, j.driver1_name,
+            j.do_number, j.delivery_scope, cu.name as customer, lp.code as pol, ld.code as pod, t.day_from, t.day_to, t.masih_jalan,
+            t.tanpa_gate, b.selling, b.cost, b.selling - b.cost as kontribusi, coalesce(tc.days, 0) as days,
+            coalesce(tc.rent_cost, 0) as rent_cost, b.selling - b.cost - coalesce(tc.rent_cost, 0) as untung
+     from v_vehicle_trip t join vehicle v on v.id = t.vehicle_id join job j on j.id = t.job_id join v_job_balance b on b.job_id = t.job_id
+     join res_partner cu on cu.id = j.customer_id join location lp on lp.id = j.pol_id join location ld on ld.id = j.pod_id
+     left join v_vehicle_trip_cost tc on tc.job_id = t.job_id
+     where ($1::int is null or t.vehicle_id = $1) and t.day_from <= $3 and t.day_to >= $2
+     order by t.day_from, v.plate_number, j.id`, [vehicleId ? Number(vehicleId) : null, rg.from, rg.to]);
+  for (const x of rows) {
+    x.rent_cost = Math.round(x.rent_cost);
+    x.untung = Math.round(x.untung);
+    x.status = x.masih_jalan ? "Masih jalan" : x.tanpa_gate ? "Tanpa gate (tgl job)" : "Selesai";
+    x.rute = `${x.pol} - ${x.pod}${x.trip_type === "ROUND_TRIP" ? " PP" : ""}`;
+  }
+  return rows;
+}
+
+// ---------------------------------------------------------------- export Excel
+const XL_SUMMARY = [
+  ["PLAT", "plate_number", 14], ["TRUK", "truck_type", 10], ["PEMILIK", "pemilik", 22], ["SEWA / BULAN", "sewa_bulanan"],
+  ["BIAYA / HARI", "biaya_per_hari"], ["HARI KONTRAK", "hari_kontrak"], ["HARI JALAN", "hari_jalan"], ["HARI MENGANGGUR", "hari_menganggur"],
+  ["UTILISASI %", "utilisasi"], ["TRIP", "trips"], ["SELLING", "selling"], ["UANG JALAN", "uang_jalan"], ["KONTRIBUSI", "kontribusi"],
+  ["SEWA BULAN INI", "sewa_bulan"], ["SEWA S/D HARI INI", "sewa_sd_hari_ini"], ["UNTUNG BERSIH", "untung"], ["BIAYA MENGANGGUR", "biaya_menganggur"],
+  ["TITIK IMPAS (TRIP)", "titik_impas"],
+];
+const XL_TRIPS = [
+  ["PLAT", "plate_number", 14], ["JOB NUMBER", "job_number", 16], ["KODE TUGAS", "do_number", 18], ["TGL JOB", "job_date", 12],
+  ["CUSTOMER", "customer", 18], ["RUTE", "rute", 22], ["DRIVER", "driver1_name", 16], ["GATE OUT", "gate_out_at", 18], ["GATE IN", "gate_in_at", 18],
+  ["STATUS", "status", 18], ["HARI DARI", "day_from", 12], ["HARI SAMPAI", "day_to", 12], ["HARI", "days"], ["SELLING", "selling"],
+  ["UANG JALAN", "cost"], ["KONTRIBUSI", "kontribusi"], ["SEWA TERALOKASI", "rent_cost"], ["UNTUNG TRIP", "untung"],
+];
+const XL_DAYS = [["PLAT", "plate_number", 14], ["TANGGAL", "day", 12], ["BIAYA SEWA HARI INI", "day_cost"], ["STATUS", "status", 14], ["JOB", "jobs", 40]];
+
+function addSheet(wb, name, cols, rows, totalKeys = []) {
+  const ws = wb.addWorksheet(name);
+  ws.columns = cols.map(([header, key, width]) => ({ header, key, width: width || Math.max(12, Math.min(header.length + 2, 22)) }));
+  ws.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
+  ws.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF2A1A0E" } };
+  for (const r of rows) ws.addRow(r);
+  if (rows.length && totalKeys.length) {
+    const total = { [cols[0][1]]: "TOTAL" };
+    for (const k of totalKeys) total[k] = rows.reduce((a, r) => a + Number(r[k] || 0), 0);
+    const tr = ws.addRow(total);
+    tr.font = { bold: true };
+  }
+  ws.columns.forEach((c) => { if (rows.some((r) => typeof r[c.key] === "number")) c.numFmt = "#,##0;-#,##0"; });
+  ws.views = [{ state: "frozen", ySplit: 1 }];
+  ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: cols.length } };
+  return ws;
+}
+
+// untung rugi semua unit sewa untuk satu bulan
+export async function unitSummary(q, month) {
+  const r = monthRange(month);
+  const rows = await q.query(
+    `with days as (
+       select vd.vehicle_id, vd.day, vd.day_cost,
+              exists (select 1 from v_vehicle_trip t where t.vehicle_id = vd.vehicle_id and vd.day between t.day_from and t.day_to) as dipakai
+       from v_vehicle_day vd where vd.day between $1 and $2
+     ),
+     trips as (
+       select t.vehicle_id, count(*)::int as trips, sum(b.selling) as selling, sum(b.cost) as cost,
+              sum(tc.rent_cost) as rent_alloc, count(*) filter (where t.masih_jalan)::int as masih_jalan,
+              count(*) filter (where t.tanpa_gate)::int as tanpa_gate
+       from v_vehicle_trip t join v_job_balance b on b.job_id = t.job_id
+       left join v_vehicle_trip_cost tc on tc.job_id = t.job_id
+       where t.day_from between $1 and $2 group by t.vehicle_id
+     )
+     select v.id as vehicle_id, v.plate_number, v.truck_type,
+            (select string_agg(distinct p.name, ', ') from vehicle_contract c left join res_partner p on p.id = c.partner_id
+              where c.vehicle_id = v.id and c.date_start <= $2 and coalesce(c.date_end, $2) >= $1) as pemilik,
+            (select max(c.monthly_rent + c.other_monthly_cost) from vehicle_contract c
+              where c.vehicle_id = v.id and c.date_start <= $2 and coalesce(c.date_end, $2) >= $1) as sewa_bulanan,
+            count(d.day)::int as hari_kontrak,
+            count(d.day) filter (where d.day <= $3)::int as hari_berjalan,
+            count(d.day) filter (where d.day <= $3 and d.dipakai)::int as hari_jalan,
+            count(d.day) filter (where d.day <= $3 and not d.dipakai)::int as hari_menganggur,
+            coalesce(sum(d.day_cost), 0) as sewa_bulan,
+            coalesce(sum(d.day_cost) filter (where d.day <= $3), 0) as sewa_sd_hari_ini,
+            coalesce(sum(d.day_cost) filter (where d.day <= $3 and not d.dipakai), 0) as biaya_menganggur,
+            coalesce(t.trips, 0) as trips, coalesce(t.selling, 0) as selling, coalesce(t.cost, 0) as uang_jalan,
+            coalesce(t.selling, 0) - coalesce(t.cost, 0) as kontribusi, coalesce(t.masih_jalan, 0) as masih_jalan,
+            coalesce(t.tanpa_gate, 0) as tanpa_gate
+     from vehicle v
+     join days d on d.vehicle_id = v.id
+     left join trips t on t.vehicle_id = v.id
+     group by v.id, t.trips, t.selling, t.cost, t.masih_jalan, t.tanpa_gate
+     order by v.plate_number`, [r.from, r.to, today()]);
+  for (const x of rows) {
+    // sewa per hari bisa berkoma (15.000.000 / 31); ditampilkan dalam rupiah bulat
+    for (const k of ["sewa_bulan", "sewa_sd_hari_ini", "biaya_menganggur"]) x[k] = Math.round(x[k]);
+    x.biaya_per_hari = x.hari_kontrak ? Math.round(x.sewa_bulan / x.hari_kontrak) : 0;
+    x.untung = money(x.kontribusi - x.sewa_sd_hari_ini);
+    x.utilisasi = x.hari_berjalan ? Math.round((x.hari_jalan / x.hari_berjalan) * 100) : 0;
+    const avg = x.trips ? x.kontribusi / x.trips : 0;
+    x.titik_impas = avg > 0 ? Math.round((x.sewa_bulan / avg) * 10) / 10 : null;   // trip per bulan agar sewa tertutup
+  }
+  return { ...r, today: today(), units: rows };
+}
+
+export default function unitRoutes(db) {
+  const r = express.Router();
+  const read = requireRole(ROLES.READ);
+
+  r.get("/units/summary", read, route((req) => unitSummary(db, req.query.month)));
+  // semua trip unit sewa di bulan itu (untuk analisa lintas unit)
+  r.get("/units/trips", read, route(async (req) => ({ ...monthRange(req.query.month), trips: await unitTrips(db, req.query.month, req.query.vehicle_id || null) })));
+
+  // Excel: RINGKASAN UNIT, TRIP, HARIAN. POST { month, vehicle_ids?, job_ids? } = persis yang tampil setelah filter di layar.
+  const exportUnits = async (req, res, b) => {
+    try {
+      const rg = monthRange(b.month);
+      const keepV = Array.isArray(b.vehicle_ids) && b.vehicle_ids.length ? new Set(b.vehicle_ids.map(Number)) : null;
+      const keepJ = Array.isArray(b.job_ids) && b.job_ids.length ? new Set(b.job_ids.map(Number)) : null;
+      let units = (await unitSummary(db, rg.month)).units;
+      if (b.vehicle_id) units = units.filter((u) => u.vehicle_id === Number(b.vehicle_id));
+      if (keepV) units = units.filter((u) => keepV.has(u.vehicle_id));
+      let trips = await unitTrips(db, rg.month, b.vehicle_id || null);
+      if (keepJ) trips = trips.filter((t) => keepJ.has(t.job_id));
+      else if (keepV) trips = trips.filter((t) => keepV.has(t.vehicle_id));
+      const vids = [...new Set((b.vehicle_id ? [Number(b.vehicle_id)] : units.map((u) => u.vehicle_id)))];
+      const days = vids.length ? await db.query(
+        `select v.plate_number, to_char(g.d, 'YYYY-MM-DD') as day, round(vd.day_cost) as day_cost,
+                (select string_agg(j.job_number, ', ' order by j.job_number) from v_vehicle_trip t join job j on j.id = t.job_id
+                  where t.vehicle_id = v.id and g.d::date between t.day_from and t.day_to) as jobs
+         from vehicle v cross join generate_series($2::date, $3::date, interval '1 day') g(d)
+         left join v_vehicle_day vd on vd.vehicle_id = v.id and vd.day = g.d::date
+         where v.id = any($1::int[]) order by v.plate_number, g.d`, [vids, rg.from, rg.to]) : [];
+      for (const d of days) d.status = d.day_cost == null ? "Di luar kontrak" : d.day > today() ? "Belum terjadi" : d.jobs ? "Dipakai" : "Menganggur";
+      const wb = new ExcelJS.Workbook();
+      addSheet(wb, "RINGKASAN UNIT", XL_SUMMARY, units,
+        ["hari_kontrak", "hari_jalan", "hari_menganggur", "trips", "selling", "uang_jalan", "kontribusi", "sewa_bulan", "sewa_sd_hari_ini", "untung", "biaya_menganggur"]);
+      addSheet(wb, "TRIP", XL_TRIPS, trips, ["days", "selling", "cost", "kontribusi", "rent_cost", "untung"]);
+      addSheet(wb, "HARIAN", XL_DAYS, days, ["day_cost"]);
+      const plate = b.vehicle_id && units[0] ? `-${units[0].plate_number.replace(/\s/g, "")}` : "";
+      const name = `unit-sewa-${rg.month}${plate}.xlsx`;
+      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      res.setHeader("Content-Disposition", `attachment; filename="${name}"`);
+      await wb.xlsx.write(res);
+      res.end();
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  };
+  r.get("/units/export.xlsx", read, (req, res) => exportUnits(req, res, req.query));
+  r.post("/units/export.xlsx", read, (req, res) => exportUnits(req, res, req.body || {}));
+
+  // rincian satu unit: trip bulan itu + kalender hari (dipakai / menganggur)
+  r.get("/units/:vehicleId/detail", read, route(async (req) => {
+    const id = Number(req.params.vehicleId);
+    const rg = monthRange(req.query.month);
+    const [vehicle] = await db.query("select * from vehicle where id = $1", [id]);
+    if (!vehicle) fail("Unit tidak ditemukan", 404);
+    const trips = await unitTrips(db, rg.month, id);
+    const days = await db.query(
+      `select to_char(g.d, 'YYYY-MM-DD') as day, vd.day_cost,
+              (select string_agg(j.job_number, ', ' order by j.job_number) from v_vehicle_trip t join job j on j.id = t.job_id
+                where t.vehicle_id = $1 and g.d::date between t.day_from and t.day_to) as jobs
+       from generate_series($2::date, $3::date, interval '1 day') g(d)
+       left join v_vehicle_day vd on vd.vehicle_id = $1 and vd.day = g.d::date
+       order by g.d`, [id, rg.from, rg.to]);
+    const contracts = await db.query(
+      `select c.*, p.name as partner from vehicle_contract c left join res_partner p on p.id = c.partner_id
+       where c.vehicle_id = $1 order by c.date_start`, [id]);
+    for (const x of days) if (x.day_cost != null) x.day_cost = Math.round(x.day_cost);
+    return { ...rg, today: today(), vehicle, trips, days, contracts };
+  }));
+
+  // ---------------------------------------------------------------- kontrak sewa
+  r.get("/units/contracts", read, route(() => db.query(
+    `select c.*, v.plate_number, v.truck_type, p.name as partner,
+            (c.date_end is null or c.date_end >= (now() at time zone 'Asia/Jakarta')::date) as berjalan
+     from vehicle_contract c join vehicle v on v.id = c.vehicle_id left join res_partner p on p.id = c.partner_id
+     order by berjalan desc, v.plate_number, c.date_start desc`)));
+
+  const saveContract = async (t, req, id) => {
+    const b = req.body || {};
+    let vehicleId = Number(b.vehicle_id) || null;
+    // unit baru langsung dari form: plat + jenis truk
+    if (!vehicleId) {
+      const plate = normPlate(b.plate_number);
+      if (!plate) fail("Pilih unit atau isi plat");
+      const [ex] = await t.query("select id from vehicle where upper(regexp_replace(plate_number, '\\s', '', 'g')) = $1", [plate.replace(/\s/g, "")]);
+      vehicleId = ex?.id || await insertRow(t, "vehicle", { plate_number: plate, truck_type: String(b.truck_type || "").trim().toUpperCase() || "CDDL",
+        owner_partner_id: b.partner_id ? Number(b.partner_id) : null });
+    }
+    if (!b.date_start) fail("Isi tanggal mulai sewa");
+    if (b.date_end && b.date_end < b.date_start) fail("Tanggal selesai sebelum tanggal mulai");
+    const rent = money(b.monthly_rent);
+    if (!(rent > 0)) fail("Isi biaya sewa per bulan");
+    const [overlap] = await t.query(
+      `select id, date_start, date_end from vehicle_contract where vehicle_id = $1 and id <> $2
+       and date_start <= coalesce($4::date, 'infinity'::date) and coalesce(date_end, 'infinity'::date) >= $3::date`,
+      [vehicleId, id || 0, b.date_start, b.date_end || null]);
+    if (overlap) fail(`Unit ini sudah punya kontrak ${overlap.date_start} s/d ${overlap.date_end || "sekarang"} yang tumpang tindih. Isi tanggal selesai kontrak lama dulu.`);
+    const row = {
+      vehicle_id: vehicleId, partner_id: b.partner_id ? Number(b.partner_id) : null, date_start: b.date_start, date_end: b.date_end || null,
+      monthly_rent: rent, other_monthly_cost: money(b.other_monthly_cost), note: b.note || null,
+    };
+    if (id) {
+      const [old] = await t.query("select * from vehicle_contract where id = $1 for update", [id]);
+      if (!old) fail("Kontrak tidak ditemukan", 404);
+      const [billed] = await t.query("select count(*)::int as n from vehicle_rent_bill where contract_id = $1 and state = 'posted'", [id]);
+      if (billed.n && (Number(old.monthly_rent) !== rent || old.date_start !== b.date_start))
+        fail("Kontrak ini sudah ditagih. Untuk harga sewa baru, isi tanggal selesai kontrak ini lalu buat kontrak baru mulai tanggal harga baru.");
+      await t.query(`update vehicle_contract set ${Object.keys(row).map((k, i) => `${k} = $${i + 1}`).join(", ")} where id = $${Object.keys(row).length + 1}`,
+        [...Object.values(row), id]);
+      await audit(t, req, "vehicle_contract", id, "update", { dari: { sewa: old.monthly_rent, mulai: old.date_start, selesai: old.date_end }, ke: row });
+      return id;
+    }
+    const newId = await insertRow(t, "vehicle_contract", { ...row, created_by: req.user.id });
+    await audit(t, req, "vehicle_contract", newId, "create", row);
+    return newId;
+  };
+  r.post("/units/contracts", requireRole(ROLES.FINANCE), route((req) => db.tx(async (t) => ({ id: await saveContract(t, req, null) }))));
+  r.put("/units/contracts/:id", requireRole(ROLES.FINANCE), route((req) => db.tx(async (t) => ({ id: await saveContract(t, req, Number(req.params.id)) }))));
+
+  // ---------------------------------------------------------------- tagihan sewa bulanan
+  r.get("/units/rent-bills", read, route((req) => {
+    const rg = monthRange(req.query.month);
+    return db.query(
+      `select b.*, v.plate_number, v.truck_type, p.name as partner, c.monthly_rent,
+              (select json_agg(json_build_object('id', x.id, 'pay_date', x.pay_date, 'amount', x.amount, 'note', x.note,
+                 'reversed', x.reversed_payment_id is not null or exists (select 1 from vehicle_rent_payment y where y.reversed_payment_id = x.id),
+                 'bank', ba.name) order by x.id)
+               from vehicle_rent_payment x left join res_bank_account ba on ba.id = x.bank_account_id where x.bill_id = b.id) as payments
+       from v_vehicle_rent_bill b join vehicle_contract c on c.id = b.contract_id join vehicle v on v.id = c.vehicle_id
+       left join res_partner p on p.id = c.partner_id
+       where ($1::text = 'all' or b.period = $2::date) order by b.period desc, v.plate_number`,
+      [req.query.month === "all" ? "all" : "", rg.from]);
+  }));
+
+  // buat tagihan sewa untuk semua kontrak yang berjalan di bulan itu (prorata hari), yang sudah ada dilewati
+  r.post("/units/rent-bills/generate", requireRole(ROLES.FINANCE), route((req) => db.tx(async (t) => {
+    const rg = monthRange(req.body?.month);
+    const list = await t.query(
+      `select c.*, greatest(c.date_start, $1::date) as d1, least(coalesce(c.date_end, $2::date), $2::date) as d2
+       from vehicle_contract c
+       where c.date_start <= $2 and coalesce(c.date_end, $2) >= $1
+         and not exists (select 1 from vehicle_rent_bill b where b.contract_id = c.id and b.period = $1 and b.state = 'posted')
+       for update of c`, [rg.from, rg.to]);
+    const made = [];
+    for (const c of list) {
+      const days = Math.round((Date.parse(`${c.d2}T00:00:00Z`) - Date.parse(`${c.d1}T00:00:00Z`)) / 864e5) + 1;
+      const amount = money((Number(c.monthly_rent) * days) / rg.days);
+      if (!(amount > 0)) continue;
+      const id = await insertRow(t, "vehicle_rent_bill", {
+        number: await nextNumber(t, `SWA/${rg.month.slice(2).replace("-", "")}`, `SWA/${rg.month.slice(2).replace("-", "")}/`),
+        contract_id: c.id, period: rg.from, days, amount, due_date: req.body?.due_date || null, note: req.body?.note || null, created_by: req.user.id,
+      });
+      await audit(t, req, "vehicle_rent_bill", id, "create", { contract_id: c.id, period: rg.from, days, amount });
+      made.push({ id, amount });
+    }
+    return { count: made.length, total: money(made.reduce((a, x) => a + x.amount, 0)) };
+  })));
+
+  r.post("/units/rent-bills/:id/pay", requireRole(ROLES.FINANCE), route((req) => db.tx(async (t) => {
+    const id = Number(req.params.id);
+    await t.query("select id from vehicle_rent_bill where id = $1 for update", [id]);
+    const [b] = await t.query("select * from v_vehicle_rent_bill where id = $1", [id]);
+    if (!b) fail("Tagihan tidak ditemukan", 404);
+    if (b.state !== "posted") fail("Tagihan sudah dibatalkan");
+    const body = req.body || {};
+    const amount = body.amount == null || body.amount === "" ? Number(b.residual) : money(body.amount);
+    if (!(amount > 0)) fail("Nominal harus lebih dari 0");
+    if (amount > Number(b.residual) + 0.004) fail(`Melebihi sisa tagihan ${rupiah(b.residual)}`);
+    const [bank] = await t.query("select * from res_bank_account where id = $1", [Number(body.bank_account_id) || 0]);
+    if (!bank) fail("Pilih rekening AMICO yang dipakai membayar");
+    const pid = await insertRow(t, "vehicle_rent_payment", {
+      bill_id: id, pay_date: body.pay_date || today(), amount, bank_account_id: bank.id, note: body.note || null, created_by: req.user.id,
+    });
+    await audit(t, req, "vehicle_rent_bill", id, "pay", { payment_id: pid, amount, bank: bank.name });
+    return { id: pid };
+  })));
+
+  r.post("/units/rent-payments/:id/reverse", requireRole(ROLES.FINANCE), route((req) => db.tx(async (t) => {
+    const id = Number(req.params.id);
+    const [p] = await t.query("select * from vehicle_rent_payment where id = $1 for update", [id]);
+    if (!p) fail("Pembayaran tidak ditemukan", 404);
+    if (p.reversed_payment_id || Number(p.amount) < 0) fail("Ini sudah baris pembalik");
+    const [done] = await t.query("select id from vehicle_rent_payment where reversed_payment_id = $1", [id]);
+    if (done) fail("Pembayaran ini sudah dibalik");
+    if (!String(req.body?.reason || "").trim()) fail("Alasan wajib diisi");
+    const rid = await insertRow(t, "vehicle_rent_payment", {
+      bill_id: p.bill_id, pay_date: req.body.pay_date || today(), amount: -Number(p.amount), bank_account_id: p.bank_account_id,
+      reversed_payment_id: id, note: req.body.reason, created_by: req.user.id,
+    });
+    await audit(t, req, "vehicle_rent_bill", p.bill_id, "reverse_pay", { payment_id: id, reason: req.body.reason });
+    return { id: rid };
+  })));
+
+  r.post("/units/rent-bills/:id/cancel", requireRole(ROLES.FINANCE), route((req) => db.tx(async (t) => {
+    const id = Number(req.params.id);
+    await t.query("select id from vehicle_rent_bill where id = $1 for update", [id]);
+    const [b] = await t.query("select * from v_vehicle_rent_bill where id = $1", [id]);
+    if (!b) fail("Tagihan tidak ditemukan", 404);
+    if (b.state !== "posted") fail("Tagihan sudah dibatalkan");
+    if (Math.abs(Number(b.paid)) > 0.004) fail("Tagihan ini sudah ada pembayaran. Balik dulu pembayarannya.");
+    if (!String(req.body?.reason || "").trim()) fail("Alasan wajib diisi");
+    await t.query("update vehicle_rent_bill set state = 'cancelled', cancel_reason = $1 where id = $2", [req.body.reason, id]);
+    await audit(t, req, "vehicle_rent_bill", id, "cancel", { reason: req.body.reason });
+    return { ok: true };
+  })));
+
+  return r;
+}

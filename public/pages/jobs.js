@@ -390,6 +390,11 @@ export async function renderJobDetail(id) {
         ${kv("Selling setelah pajak", j.selling_after_tax != null ? `${rp(j.selling_after_tax)} (manual)` : "Dihitung dari pajak customer")}
         ${kv("Catatan", j.note)}
       </div></div>
+      ${d.unit ? `<div class="panel wide-panel"><h2>Unit sewa ${esc(d.unit.plate_number)} <span class="hint">sewa dibagi per hari trip (gate out s/d gate in)</span>
+          <span class="spacer"></span><a class="btn small" href="#/units" onclick="sessionStorage.setItem('units', JSON.stringify({ tab: 'profit', month: '${String(d.unit.day_from).slice(0, 7)}', unit: '${d.unit.vehicle_id}' }))">Lihat unit</a></h2>
+        <div class="kv">${kv("Hari trip", `${d.unit.days} hari (${tgl(d.unit.day_from)} s/d ${tgl(d.unit.day_to)})${d.unit.masih_jalan ? ", masih jalan" : ""}${d.unit.tanpa_gate ? ", tanpa gate: pakai tanggal job" : ""}`)}
+          ${kv("Kontribusi (selling - uang jalan)", rp(d.balance.selling - d.balance.cost))}${kv("Sewa teralokasi", rp(d.unit.rent_cost))}
+          ${kv("Untung trip setelah sewa", rp(d.balance.selling - d.balance.cost - d.unit.rent_cost))}</div></div>` : ""}
       ${d.reroutes.length ? `<div class="panel wide-panel"><h2>Riwayat reroute</h2>${table(
         "<th>Waktu</th><th>Dari</th><th>Ke</th><th class='num'>Cost</th><th class='num'>Selling</th><th>Alasan</th><th>Oleh</th>",
         d.reroutes.map((r) => { const x = r.detail || {}; return `<tr><td class="nowrap">${jam(r.at)}</td><td>${esc(x.dari)}${x.truk_dari !== x.truk_ke ? ` · ${esc(x.truk_dari)}` : ""}</td>

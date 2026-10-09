@@ -1,7 +1,12 @@
 // Konfigurasi dari environment. Untuk lokal tidak perlu diisi apa-apa.
 //
-//   DATABASE_URL   kosong   -> PostgreSQL tertanam (PGlite) di folder data/pg, tanpa install apa pun
-//                  diisi    -> PostgreSQL sungguhan, contoh postgres://user:pass@host:5432/amico
+//   Database:
+//     di laptop (default)         -> PostgreSQL tertanam (PGlite) di folder data/pg, WALAUPUN .env berisi DATABASE_URL
+//     di Railway / NODE_ENV=production, atau perintah diberi --online
+//                                 -> PostgreSQL online dari DATABASE_URL (mis. Supabase)
+//     --data-dir=...              -> selalu database tertanam di folder itu (mis. demo)
+//   Jadi DATABASE_URL production boleh disimpan di .env laptop (untuk npm run pindah:postgres, atau
+//   npm run user:add -- ... --online) tanpa membuat npm start / tes di laptop ikut menulis ke production.
 //   PORT           default 3200
 //   SESSION_DAYS   lama login berlaku, default 7 hari
 import fs from "node:fs";
@@ -19,15 +24,21 @@ if (fs.existsSync(envFile)) {
   }
 }
 
-// argumen baris perintah: --data-dir=... --port=...
+// argumen baris perintah: --data-dir=... --port=... --online
 const arg = (name) => process.argv.find((a) => a.startsWith(`--${name}=`))?.split("=").slice(1).join("=");
 
+// jalan di Railway: Railway selalu mengisi variabel RAILWAY_* (RAILWAY_PROJECT_ID, RAILWAY_ENVIRONMENT_NAME, ...)
+const onCloud = Object.keys(process.env).some((k) => k.startsWith("RAILWAY_"));
+const online = onCloud || process.env.NODE_ENV === "production" || process.argv.includes("--online");
+
 export const CONFIG = {
-  databaseUrl: process.env.DATABASE_URL || "",
+  databaseUrl: online ? process.env.DATABASE_URL || "" : "",
   dataDir: arg("data-dir") || process.env.DATA_DIR || path.join(ROOT, "data", "pg"),
+  // --data-dir di baris perintah = sengaja memakai database tertanam itu (mis. demo), DATABASE_URL diabaikan
+  dataDirArg: Boolean(arg("data-dir")),
   port: Number(arg("port") || process.env.PORT || 3200),
   sessionDays: Number(process.env.SESSION_DAYS || 7),
   timezone: "Asia/Jakarta",
-  // jalan di Railway (variabel ini diisi Railway sendiri)
-  onCloud: Boolean(process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_PROJECT_ID),
+  onCloud,
+  online,
 };

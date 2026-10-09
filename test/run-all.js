@@ -384,6 +384,51 @@ try {
     assert.equal((await fin.call("GET", `/jobs/${JY.id}`)).reroutes.length, 1);
   });
 
+  await step("unit sewa: biaya per hari, sewa dibagi per trip (hari bersama dibagi rata), untung per unit, tagihan sewa prorata", async () => {
+    // kontrak: B 1234 HQ disewa 15.000.000 / bulan mulai 1 Sep (September 30 hari -> 500.000 / hari)
+    assert.match(await ops.call("POST", "/units/contracts", { plate_number: "B 1234 HQ", date_start: "2026-09-01", monthly_rent: 15000000 }, 403), /akses/);
+    const c1 = await fin.call("POST", "/units/contracts", { plate_number: "b 1234 hq", truck_type: "CDDL", partner_id: id.SINAR, date_start: "2026-09-01", monthly_rent: "15.000.000" });
+    assert.match(await fin.call("POST", "/units/contracts", { plate_number: "B 1234 HQ", date_start: "2026-10-01", monthly_rent: 14000000 }, 400), /tumpang tindih/);
+    await fin.call("POST", "/units/contracts", { plate_number: "B 7777 XY", date_start: "2026-09-16", monthly_rent: 6000000 });
+    // dua trip: 3-5 Sep dan 5-6 Sep (tanggal 5 dipakai dua job -> sewa hari itu dibagi dua). Cost job = uang jalan 2.500.000
+    const T1 = await job(ops, { pod_id: id.SBY, trip_type: "ONE_WAY", job_date: "2026-09-03", plate_number: "B1234HQ", cost: 2500000 });
+    const T2 = await job(ops, { pod_id: id.SBY, trip_type: "ONE_WAY", job_date: "2026-09-05", plate_number: "B 1234 HQ", cost: 2500000 });
+    await ops.call("PUT", `/jobs/${T1.id}/trip`, { gate_out_at: "2026-09-03T08:00:00+07:00", gate_in_at: "2026-09-05T07:00:00+07:00" });
+    await ops.call("PUT", `/jobs/${T2.id}/trip`, { gate_out_at: "2026-09-05T10:00:00+07:00", gate_in_at: "2026-09-06T20:00:00+07:00" });
+    const d1 = await viewer.call("GET", `/jobs/${T1.id}`);
+    assert.deepEqual([d1.unit.days, d1.unit.rent_cost], [3, 1250000]);
+    const sum = await viewer.call("GET", "/units/summary?month=2026-09");
+    const u = sum.units.find((x) => x.plate_number === "B 1234 HQ");
+    assert.deepEqual([u.hari_kontrak, u.hari_jalan, u.hari_menganggur, u.biaya_per_hari, u.trips, u.selling, u.uang_jalan, u.kontribusi, u.sewa_bulan, u.untung, u.biaya_menganggur, u.titik_impas],
+      [30, 4, 26, 500000, 2, 17000000, 5000000, 12000000, 15000000, -3000000, 13000000, 2.5]);
+    const det = await viewer.call("GET", `/units/${u.vehicle_id}/detail?month=2026-09`);
+    assert.deepEqual(det.trips.map((x) => [x.job_number, x.days, x.rent_cost, x.untung]),
+      [[T1.job_number, 3, 1250000, 4750000], [T2.job_number, 2, 750000, 5250000]]);
+    assert.equal(det.days.find((x) => x.day === "2026-09-05").jobs, [T1.job_number, T2.job_number].sort().join(", "));
+    // semua trip lintas unit + Excel (RINGKASAN UNIT, TRIP, HARIAN) persis yang tampil
+    const all = await viewer.call("GET", "/units/trips?month=2026-09");
+    assert.ok(all.trips.some((x) => x.job_id === T1.id && x.plate_number === "B 1234 HQ" && x.status === "Selesai"));
+    assert.ok((await viewer.call("POST", "/units/export.xlsx", { month: "2026-09", job_ids: [T1.id] })).byteLength > 3000);
+    assert.ok((await viewer.call("GET", "/units/export.xlsx?month=2026-09")).byteLength > 3000);
+    // tagihan sewa September: B 1234 HQ penuh 15.000.000, B 7777 XY prorata 15 hari = 3.000.000; tidak dobel kalau dibuat lagi
+    const g = await fin.call("POST", "/units/rent-bills/generate", { month: "2026-09" });
+    assert.deepEqual([g.count, g.total], [2, 18000000]);
+    assert.equal((await fin.call("POST", "/units/rent-bills/generate", { month: "2026-09" })).count, 0);
+    const bills = await viewer.call("GET", "/units/rent-bills?month=2026-09");
+    const b1 = bills.find((x) => x.plate_number === "B 1234 HQ");
+    assert.match(b1.number, /^SWA\/2609\/\d{4}$/);
+    await fin.call("POST", `/units/rent-bills/${b1.id}/pay`, { bank_account_id: id.BCA, amount: 10000000, pay_date: "2026-10-01" });
+    assert.match(await fin.call("POST", `/units/rent-bills/${b1.id}/pay`, { bank_account_id: id.BCA, amount: 6000000 }, 400), /Melebihi sisa/);
+    assert.match(await fin.call("POST", `/units/rent-bills/${b1.id}/cancel`, { reason: "salah" }, 400), /pembayaran/);
+    let after = (await viewer.call("GET", "/units/rent-bills?month=2026-09")).find((x) => x.id === b1.id);
+    assert.deepEqual([after.paid, after.residual], [10000000, 5000000]);
+    await fin.call("POST", `/units/rent-payments/${after.payments[0].id}/reverse`, { reason: "salah rekening" });
+    after = (await viewer.call("GET", "/units/rent-bills?month=2026-09")).find((x) => x.id === b1.id);
+    assert.deepEqual([after.paid, after.residual], [0, 15000000]);
+    // harga sewa sudah ditagih tidak bisa diubah di kontrak yang sama
+    assert.match(await fin.call("PUT", `/units/contracts/${c1.id}`, { vehicle_id: u.vehicle_id, date_start: "2026-09-01", monthly_rent: 16000000 }, 400), /sudah ditagih/);
+  });
+
   await step("dashboard, rekap, aging, export Excel", async () => {
     const dash = await viewer.call("GET", "/dashboard");
     assert.ok(dash.totals.jobs >= 6);

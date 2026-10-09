@@ -351,8 +351,26 @@ details.legend li { margin-bottom: 4px; }
 th.xl-sel, td.xl-sel { width: 28px; }
 
 /* maskot rubah 8-bit (fox.js) */
-.fox-layer { position: fixed; height: 90px; overflow: hidden; pointer-events: none; z-index: 6; }
+.fox-layer { position: fixed; bottom: 0; height: 112px; overflow: hidden; pointer-events: none; z-index: 6; }
 .fox-layer[hidden] { display: none; }
-.fox { position: absolute; left: 0; top: 0; width: 90px; height: 90px; image-rendering: pixelated; cursor: pointer; pointer-events: none;
+.fox { position: absolute; left: 0; bottom: 0; width: 200px; height: 112px; image-rendering: pixelated; cursor: pointer; pointer-events: none;
   filter: drop-shadow(0 2px 0 rgba(42,26,14,.12)); will-change: transform; }
 @media print { .fox-layer { display: none !important; } }
+
+/* unit sewa */
+.month-pick { flex-direction: row; align-items: center; gap: 8px; }
+.month-pick input { width: auto; }
+tr.selected td { background: #f6e2c2; }
+.unit-cal { display: grid; grid-template-columns: repeat(auto-fill, minmax(46px, 1fr)); gap: 4px; margin: 4px 0 8px; }
+.unit-cal .day { border-radius: 6px; padding: 4px 5px; min-height: 42px; font-size: 11px; line-height: 1.2; border: 1px solid var(--line-2); }
+.unit-cal .day b { display: block; font-size: 12px; }
+.unit-cal .day small { display: block; color: inherit; opacity: .85; word-break: break-all; }
+.day.used { background: var(--olive-soft); color: var(--olive-ink); border-color: transparent; }
+.day.idle { background: var(--rust-soft); color: var(--rust-ink); border-color: transparent; }
+.day.future { background: #f3ebdf; color: var(--muted); }
+.day.none { background: transparent; color: #c9b8a3; border-style: dashed; }
+.unit-cal-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 12px; color: var(--muted); margin-bottom: 14px; }
+.unit-cal-legend .day { display: inline-block; width: 14px; height: 14px; min-height: 0; padding: 0; border-radius: 4px; }
+.trip-total { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: baseline; font-size: 13px; margin: 8px 0 4px; padding: 8px 10px;
+  background: #fdf0dc; border-radius: 8px; }
+.trip-total span { white-space: nowrap; }

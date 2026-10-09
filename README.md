@@ -15,8 +15,9 @@ npm run user:add -- admin "Nama Admin" ADMIN     # user pertama (password diketi
 Mau mencoba dulu dengan data contoh: `npm run demo:seed` lalu `npm run demo` (http://localhost:3201).
 Akun uji demo: `admin`, `finance`, `ops`, `viewer`, dengan password yang tertulis di `scripts/demo-seed.js`.
 
-Lokal tidak perlu install PostgreSQL: kalau `DATABASE_URL` kosong, dipakai PostgreSQL tertanam (PGlite) di folder `data/`.
-Untuk online (VPS Hostinger / database Supabase baru) isi `DATABASE_URL` di `.env` (lihat `.env.example`).
+Lokal tidak perlu install PostgreSQL: di laptop selalu dipakai PostgreSQL tertanam (PGlite) di folder `data/`, walaupun
+`.env` berisi `DATABASE_URL`. `DATABASE_URL` hanya dipakai di Railway / `NODE_ENV=production`, perintah dengan `--online`
+(mis. `npm run user:add -- admin "Nama" ADMIN --online` untuk user production), dan `npm run pindah:postgres`.
 Skema dibuat / diperbarui otomatis saat server jalan (`db/migrations/*.sql`).
 
 ## Go live: Supabase (database) + Railway (server)
@@ -82,6 +83,20 @@ Per job, dengan bahasa yang mudah untuk orang baru: setiap fase ditulis lengkap 
 dengan nominal, status (belum ditagih / diajukan, ditagih belum dibayar, belum bisa + alasannya, lunas), nomor dokumen, dan langkah
 berikutnya. Tab: Perlu ditagih sekarang, Belum bisa ditagih, Menunggu pembayaran, Lunas. Ada filter kolom ala Excel, Tempel daftar,
 salin no job, dan centang job -> langsung buat invoice / pengajuan untuk fase yang bisa. Angkanya sama dengan Rekap Posisi.
+
+## Unit sewa (untung rugi per unit & per trip)
+
+Menu **Unit Sewa** untuk unit yang disewa bulanan. Kontrak sewa per unit (pemilik, mulai / selesai, sewa per bulan, biaya tetap
+lain); trip diambil otomatis dari job dengan plat yang sama (spasi / huruf besar diabaikan).
+- Biaya per hari = (sewa + biaya tetap lain) / jumlah hari bulan itu.
+- Hari trip = tanggal gate out s/d gate in (job tanpa gate = tanggal job). Hari yang dipakai dua job dibagi rata.
+- Kontribusi trip = selling - cost job (uang jalan). Untung trip = kontribusi - sewa teralokasi (tampil juga di halaman job).
+- Per unit per bulan: hari jalan / menganggur, utilisasi, kontribusi, untung bersih (kontribusi - sewa), biaya menganggur,
+  titik impas (trip per bulan), plus kalender hari.
+- Tabel per unit dan tabel trip (per unit atau "Semua trip bulan ini") bisa difilter / diurut per kolom seperti Excel; ringkasan
+  dan total mengikuti yang tampil. Export Excel (sheet RINGKASAN UNIT, TRIP, HARIAN) juga persis yang tampil.
+- Tagihan sewa bulanan `SWA/YYMM/NNNN` per kontrak (prorata), dibayar / balik bayar / batal. Pembayaran sewa belum masuk
+  Kas & Rekening (menunggu keputusan finance).
 
 ## Impor Job List ERP AMICO v1
 

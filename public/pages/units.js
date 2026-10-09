@@ -1,0 +1,282 @@
+// Unit sewa: untung rugi per unit per bulan (+ rincian trip & kalender hari), kontrak sewa, tagihan sewa bulanan.
+import { get, api, view, esc, rp, tgl, jam, table, tile, toast, openModal, askReason, options, vendors, bankLabel, num, state,
+  canFinance, bindRows } from "../lib.js";
+import { xlTable } from "../xlfilter.js";
+
+const TABS = { profit: "Untung rugi", contracts: "Kontrak sewa", bills: "Tagihan sewa" };
+const thisMonth = () => new Date().toLocaleDateString("sv-SE", { timeZone: "Asia/Jakarta" }).slice(0, 7);
+const monthName = (m) => new Date(`${m}-01T00:00:00`).toLocaleDateString("id-ID", { month: "long", year: "numeric" });
+const banks = () => state.cache.banks.filter((b) => b.active);
+const reload = () => window.dispatchEvent(new Event("hashchange"));
+// untung (hijau) / rugi (merah, tanda minus)
+const pl = (v) => `<span class="sign ${Number(v) >= 0 ? "plus" : "minus"}">${Number(v) < 0 ? "&minus;" : ""}${rp(Math.abs(Number(v)))}</span>`;
+
+export async function renderUnits() {
+  const saved = JSON.parse(sessionStorage.getItem("units") || "{}");
+  const tab = TABS[saved.tab] ? saved.tab : "profit";
+  const month = saved.month || thisMonth();
+  const save = (x) => sessionStorage.setItem("units", JSON.stringify({ tab, month, ...x }));
+  view().innerHTML = `
+    <div class="page-head"><h1>Unit Sewa</h1>
+      <span class="sub">Unit yang disewa bulanan: biaya per hari, untung per trip, dan untung per unit. Trip diambil otomatis dari job dengan plat yang sama.</span>
+      <div class="spacer"></div>
+      <label class="month-pick">Bulan<input type="month" id="uMonth" value="${esc(month)}"></label></div>
+    <div class="tabs">${Object.entries(TABS).map(([k, l]) => `<a href="#" data-tab="${k}" class="${k === tab ? "active" : ""}">${esc(l)}</a>`).join("")}</div>
+    <div id="uBox"><p class="muted">Memuat...</p></div>`;
+  view().querySelectorAll("[data-tab]").forEach((a) => (a.onclick = (e) => { e.preventDefault(); save({ tab: a.dataset.tab }); renderUnits(); }));
+  document.getElementById("uMonth").onchange = (e) => { save({ month: e.target.value || thisMonth() }); renderUnits(); };
+  const box = document.getElementById("uBox");
+  if (tab === "contracts") return renderContracts(box);
+  if (tab === "bills") return renderBills(box, month);
+  return renderProfit(box, month, saved.unit);
+}
+
+// ---------------------------------------------------------------- untung rugi
+const SUMMARY_COLS = [
+  { key: "plate_number", label: "Unit", value: (x) => x.plate_number },
+  { key: "truck_type", label: "Truk", value: (x) => x.truck_type },
+  { key: "pemilik", label: "Pemilik", value: (x) => x.pemilik },
+  { key: "sewa_bulanan", label: "Sewa / bulan", num: true, value: (x) => x.sewa_bulanan },
+  { key: "biaya_per_hari", label: "Biaya / hari", num: true, value: (x) => x.biaya_per_hari },
+  { key: "hari_jalan", label: "Hari jalan", num: true, value: (x) => x.hari_jalan, text: (x) => String(x.hari_jalan) },
+  { key: "hari_menganggur", label: "Menganggur", num: true, value: (x) => x.hari_menganggur, text: (x) => String(x.hari_menganggur) },
+  { key: "utilisasi", label: "Utilisasi", num: true, value: (x) => x.utilisasi, text: (x) => `${x.utilisasi}%` },
+  { key: "trips", label: "Trip", num: true, value: (x) => x.trips, text: (x) => String(x.trips) },
+  { key: "selling", label: "Selling", num: true, value: (x) => x.selling },
+  { key: "uang_jalan", label: "Uang jalan", num: true, value: (x) => x.uang_jalan },
+  { key: "kontribusi", label: "Kontribusi", num: true, value: (x) => x.kontribusi },
+  { key: "sewa_sd_hari_ini", label: "Sewa", num: true, value: (x) => x.sewa_sd_hari_ini },
+  { key: "untung", label: "Untung bersih", num: true, value: (x) => x.untung },
+  { key: "biaya_menganggur", label: "Biaya menganggur", num: true, value: (x) => x.biaya_menganggur },
+  { key: "titik_impas", label: "Titik impas", num: true, value: (x) => x.titik_impas, text: (x) => (x.titik_impas == null ? "" : `${String(x.titik_impas).replace(".", ",")} trip`) },
+];
+const TRIP_COLS = [
+  { key: "plate_number", label: "Unit", value: (x) => x.plate_number },
+  { key: "job_number", label: "Job", value: (x) => x.job_number },
+  { key: "do_number", label: "Kode tugas", value: (x) => x.do_number },
+  { key: "job_date", label: "Tgl job", value: (x) => tgl(x.job_date) },
+  { key: "customer", label: "Customer", value: (x) => x.customer },
+  { key: "rute", label: "Rute", value: (x) => x.rute },
+  { key: "driver", label: "Driver", value: (x) => x.driver1_name },
+  { key: "status", label: "Gate / status", value: (x) => x.status },
+  { key: "days", label: "Hari", num: true, value: (x) => x.days, text: (x) => String(x.days) },
+  { key: "selling", label: "Selling", num: true, value: (x) => x.selling },
+  { key: "cost", label: "Uang jalan", num: true, value: (x) => x.cost },
+  { key: "kontribusi", label: "Kontribusi", num: true, value: (x) => x.kontribusi },
+  { key: "rent_cost", label: "Sewa teralokasi", num: true, value: (x) => x.rent_cost },
+  { key: "untung", label: "Untung trip", num: true, value: (x) => x.untung },
+];
+const sumOf = (rows, k) => rows.reduce((a, x) => a + Number(x[k] || 0), 0);
+
+// unduh Excel (POST: ikut filter yang sedang tampil)
+async function downloadExcel(body) {
+  try {
+    const res = await fetch("/api/units/export.xlsx", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "Export gagal");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(await res.blob());
+    a.download = (res.headers.get("Content-Disposition") || "").match(/filename="([^"]+)"/)?.[1] || `unit-sewa-${body.month}.xlsx`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function renderProfit(box, month, openUnit) {
+  const s = await get(`/units/summary?month=${month}`);
+  const current = month === s.today.slice(0, 7);
+  box.innerHTML = `
+    <details class="panel legend" ${sessionStorage.getItem("unitsLegendClosed") ? "" : "open"} id="uLegend"><summary><b>Cara baca</b></summary><ul>
+      <li><b>Biaya per hari</b> = (sewa + biaya tetap lain) dibagi jumlah hari bulan itu. Contoh: sewa 15.000.000 di bulan 30 hari = 500.000 per hari.</li>
+      <li><b>Kontribusi trip</b> = selling - cost job (uang jalan, sudah termasuk tol, makan, gaji driver). <b>Untung trip</b> = kontribusi - sewa hari-hari trip itu
+        (gate out sampai gate in). Kalau satu hari dipakai dua job, sewa hari itu dibagi dua.</li>
+      <li><b>Untung bersih unit</b> = kontribusi semua trip yang berangkat bulan ini - sewa bulan ini${current ? " sampai hari ini" : ""}. Sewa tetap dibayar walau unit
+        menganggur, jadi <b>biaya menganggur</b> = sewa di hari tanpa trip.</li>
+      <li><b>Titik impas</b> = berapa trip sebulan (dengan kontribusi rata-rata bulan ini) supaya sewa tertutup.</li>
+      <li>Klik &#9662; di judul kolom untuk filter / urut seperti Excel. Ringkasan di atas dan Export Excel mengikuti yang tampil.</li></ul></details>
+    <div class="tiles" id="uTiles"></div>
+    <div class="panel"><h2>Per unit <span class="hint">klik unit untuk melihat trip dan kalendernya</span><span class="spacer"></span>
+        <button class="small" id="uAllTrips">Semua trip bulan ini</button><button class="small" id="uExport">Export Excel</button></h2>
+      <div id="uTable"></div></div>
+    <div id="uDetail"></div>`;
+  document.getElementById("uLegend").addEventListener("toggle", (e) => {
+    if (e.target.open) sessionStorage.removeItem("unitsLegendClosed"); else sessionStorage.setItem("unitsLegendClosed", "1");
+  });
+  const open = (id) => {
+    box.querySelectorAll("[data-unit]").forEach((x) => x.classList.toggle("selected", x.dataset.unit === String(id)));
+    const st = JSON.parse(sessionStorage.getItem("units") || "{}");
+    sessionStorage.setItem("units", JSON.stringify({ ...st, unit: String(id) }));
+    renderDetail(id, month);
+  };
+  const tiles = (u) => {
+    const hb = sumOf(u, "hari_berjalan");
+    document.getElementById("uTiles").innerHTML =
+      tile(`Sewa ${monthName(month)}`, sumOf(u, "sewa_bulan"), "out", `${u.length} unit`) +
+      tile("Kontribusi trip", sumOf(u, "kontribusi"), "in", `${sumOf(u, "trips")} trip, selling ${rp(sumOf(u, "selling"))}`) +
+      tile(current ? "Untung bersih s/d hari ini" : "Untung bersih", sumOf(u, "untung"), sumOf(u, "untung") >= 0 ? "plus" : "minus", "kontribusi - sewa") +
+      tile("Biaya menganggur", sumOf(u, "biaya_menganggur"), sumOf(u, "biaya_menganggur") > 0 ? "warn" : "", `${sumOf(u, "hari_menganggur")} hari unit tidak jalan`) +
+      tile("Utilisasi", hb ? Math.round((sumOf(u, "hari_jalan") / hb) * 100) : 0, "", "% hari unit dipakai trip");
+  };
+  const grid = xlTable(document.getElementById("uTable"), {
+    id: "unit-summary", columns: SUMMARY_COLS, empty: `Belum ada unit sewa di ${monthName(month)}. Tambahkan di tab Kontrak sewa.`,
+    rowHtml: (x) => `<tr class="click ${String(x.vehicle_id) === String(openUnit) ? "selected" : ""}" data-unit="${x.vehicle_id}">
+      <td><b>${esc(x.plate_number)}</b></td><td>${esc(x.truck_type)}</td><td>${esc(x.pemilik || "-")}</td>
+      <td class="num">${rp(x.sewa_bulanan)}</td><td class="num">${rp(x.biaya_per_hari)}</td>
+      <td class="num">${x.hari_jalan}</td><td class="num">${x.hari_menganggur}</td><td class="num">${x.utilisasi}%</td>
+      <td class="num">${x.trips}${x.masih_jalan ? `<br><span class="muted">${x.masih_jalan} masih jalan</span>` : ""}</td>
+      <td class="num">${rp(x.selling)}</td><td class="num">${rp(x.uang_jalan)}</td><td class="num">${rp(x.kontribusi)}</td>
+      <td class="num">${rp(x.sewa_sd_hari_ini)}</td><td class="num"><b>${pl(x.untung)}</b></td><td class="num">${rp(x.biaya_menganggur)}</td>
+      <td class="num">${x.titik_impas == null ? "-" : `${String(x.titik_impas).replace(".", ",")} trip`}</td></tr>`,
+    onChange: (vis) => {
+      tiles(vis);
+      box.querySelectorAll("[data-unit]").forEach((tr) => (tr.onclick = () => open(tr.dataset.unit)));
+    },
+  });
+  grid.setRows(s.units);
+  document.getElementById("uAllTrips").onclick = () => open("all");
+  document.getElementById("uExport").onclick = () => {
+    if (!grid.visible().length) return toast("Tidak ada unit yang tampil", true);
+    downloadExcel({ month, vehicle_ids: grid.visible().map((x) => x.vehicle_id) });
+  };
+  if (openUnit === "all" || s.units.some((x) => String(x.vehicle_id) === String(openUnit))) renderDetail(openUnit, month);
+}
+
+async function renderDetail(vehicleId, month) {
+  const box = document.getElementById("uDetail");
+  box.innerHTML = `<p class="muted">Memuat...</p>`;
+  const all = vehicleId === "all";
+  const d = all ? await get(`/units/trips?month=${month}`) : await get(`/units/${vehicleId}/detail?month=${month}`);
+  const dayClass = (x) => !x.day_cost && x.day_cost !== 0 ? "none" : x.day > d.today ? "future" : x.jobs ? "used" : "idle";
+  box.innerHTML = `
+    <div class="panel"><h2>${all ? "Semua trip unit sewa" : esc(d.vehicle.plate_number)} &middot; ${esc(monthName(month))}
+        ${all ? "" : `<span class="hint">${d.contracts.map((c) => `sewa ${rp(c.monthly_rent)}${c.other_monthly_cost > 0 ? ` + biaya lain ${rp(c.other_monthly_cost)}` : ""} / bulan dari ${esc(c.partner || "-")}, ${tgl(c.date_start)} s/d ${c.date_end ? tgl(c.date_end) : "sekarang"}`).join("; ")}</span>`}
+        <span class="spacer"></span><button class="small" id="tripExport">Export Excel</button></h2>
+      ${all ? "" : `<div class="unit-cal">${d.days.map((x) => `<div class="day ${dayClass(x)}" title="${esc(x.day)}${x.day_cost ? ` · sewa ${rp(x.day_cost)}` : " · di luar kontrak"}${x.jobs ? ` · ${x.jobs}` : dayClass(x) === "idle" ? " · menganggur" : ""}">
+        <b>${Number(x.day.slice(8))}</b>${x.jobs ? `<small>${esc(x.jobs.split(", ").map((n) => n.slice(-4)).join(" "))}</small>` : ""}</div>`).join("")}</div>
+      <div class="unit-cal-legend"><span class="day used"></span> dipakai trip <span class="day idle"></span> menganggur (sewa tetap jalan)
+        <span class="day future"></span> belum terjadi <span class="day none"></span> di luar kontrak</div>`}
+      <h3>Trip</h3>
+      <div id="tripTable"></div>
+      <div class="trip-total" id="tripTotal"></div>
+      <div class="note-box">Trip yang melewati pergantian bulan ikut tampil di kedua bulan; sewanya dihitung per hari, selling & uang jalan dihitung di bulan berangkat.
+        Pastikan plat di job sama dengan plat unit (spasi dan huruf besar / kecil tidak masalah).</div>
+    </div>`;
+  const grid = xlTable(document.getElementById("tripTable"), {
+    id: "unit-trips", columns: TRIP_COLS, empty: "Belum ada trip di bulan ini",
+    rowHtml: (x) => `<tr class="click" data-href="#/jobs/${x.job_id}">
+      <td>${esc(x.plate_number)}</td><td><b>${esc(x.job_number)}</b></td><td>${esc(x.do_number || "")}</td><td class="nowrap">${tgl(x.job_date)}</td>
+      <td>${esc(x.customer)}</td><td>${esc(x.rute)}</td><td>${esc(x.driver1_name || "")}</td>
+      <td class="nowrap">${x.gate_out_at ? `${jam(x.gate_out_at)}<br>${x.gate_in_at ? jam(x.gate_in_at) : `<span class="badge draft">masih jalan</span>`}`
+        : `<span class="muted">tanpa gate, tgl job</span>`}</td>
+      <td class="num">${x.days}</td><td class="num">${rp(x.selling)}</td><td class="num">${rp(x.cost)}</td><td class="num">${rp(x.kontribusi)}</td>
+      <td class="num">${rp(x.rent_cost)}</td><td class="num"><b>${pl(x.untung)}</b></td></tr>`,
+    onChange: (vis) => {
+      bindRows(document.getElementById("tripTable"));
+      document.getElementById("tripTotal").innerHTML = vis.length ? `<b>Total ${vis.length} trip yang tampil:</b>
+        <span>hari ${rp(sumOf(vis, "days"))}</span><span>selling ${rp(sumOf(vis, "selling"))}</span><span>uang jalan ${rp(sumOf(vis, "cost"))}</span>
+        <span>kontribusi ${rp(sumOf(vis, "kontribusi"))}</span><span>sewa teralokasi ${rp(sumOf(vis, "rent_cost"))}</span>
+        <span>untung ${pl(sumOf(vis, "untung"))}</span>
+        <span>rata-rata untung / trip ${pl(Math.round(sumOf(vis, "untung") / vis.length))}</span>` : "";
+    },
+  });
+  grid.setRows(d.trips);
+  document.getElementById("tripExport").onclick = () => {
+    if (!grid.visible().length) return toast("Tidak ada trip yang tampil", true);
+    downloadExcel({ month, vehicle_id: all ? undefined : Number(vehicleId), job_ids: grid.visible().map((x) => x.job_id) });
+  };
+  box.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+// ---------------------------------------------------------------- kontrak sewa
+async function renderContracts(box) {
+  const list = await get("/units/contracts");
+  box.innerHTML = `
+    <div class="panel"><h2>Kontrak sewa unit ${canFinance() ? `<span class="spacer"></span><button class="primary small" id="newContract">+ Kontrak sewa</button>` : ""}</h2>
+      ${table(`<th>Unit</th><th>Pemilik</th><th>Mulai</th><th>Selesai</th><th class="num">Sewa / bulan</th><th class="num">Biaya tetap lain</th><th>Status</th><th>Catatan</th><th></th>`,
+        list.map((c) => `<tr><td><b>${esc(c.plate_number)}</b><br><span class="muted">${esc(c.truck_type)}</span></td><td>${esc(c.partner || "-")}</td>
+          <td>${tgl(c.date_start)}</td><td>${c.date_end ? tgl(c.date_end) : "-"}</td><td class="num">${rp(c.monthly_rent)}</td><td class="num">${rp(c.other_monthly_cost)}</td>
+          <td>${c.berjalan ? `<span class="badge posted">Berjalan</span>` : `<span class="badge cancelled">Selesai</span>`}</td><td class="small-text">${esc(c.note || "")}</td>
+          <td>${canFinance() ? `<button class="small" data-edit="${c.id}">Ubah</button>` : ""}</td></tr>`).join(""), "Belum ada kontrak sewa")}
+      <div class="note-box">Harga sewa berubah? Isi tanggal selesai di kontrak lama, lalu buat kontrak baru mulai tanggal harga baru, supaya bulan-bulan lama tetap memakai harga lama.</div>
+    </div>`;
+  const form = (c = {}) => openModal({
+    title: c.id ? `Ubah kontrak ${c.plate_number}` : "Kontrak sewa baru",
+    body: `<div class="form-grid">
+      ${c.id ? `<input type="hidden" name="vehicle_id" value="${c.vehicle_id}"><label>Unit<input value="${esc(c.plate_number)}" disabled></label>`
+        : `<label>Unit (dari master)<select name="vehicle_id">${options(state.cache.vehicles.filter((v) => v.active), "", (v) => `${v.plate_number} - ${v.truck_type}`, "- unit baru, isi plat -")}</select></label>
+           <label>Plat unit baru<input name="plate_number" placeholder="B 1234 HQ"></label>
+           <label>Jenis truk<input name="truck_type" list="truckTypesU" placeholder="CDDL"><datalist id="truckTypesU">${["CDD", "CDDL", "FUSO", "TRONTON", "WINGBOX"].map((x) => `<option value="${x}">`).join("")}</datalist></label>`}
+      <label>Pemilik / yang menyewakan<select name="partner_id">${options(vendors(), c.partner_id, undefined, "-")}</select></label>
+      <label>Mulai sewa<input type="date" name="date_start" value="${tgl(c.date_start)}" required></label>
+      <label>Selesai sewa (kosong = masih berjalan)<input type="date" name="date_end" value="${tgl(c.date_end)}"></label>
+      <label>Sewa per bulan<input class="num" name="monthly_rent" value="${c.monthly_rent ? rp(c.monthly_rent) : ""}" required></label>
+      <label>Biaya tetap lain per bulan<input class="num" name="other_monthly_cost" value="${c.other_monthly_cost ? rp(c.other_monthly_cost) : ""}" placeholder="asuransi, GPS (opsional)"></label>
+      <label class="wide">Catatan<input name="note" value="${esc(c.note || "")}"></label></div>
+      <div class="note-box">Biaya per hari = (sewa + biaya tetap lain) / jumlah hari di bulan itu. Tagihan sewa ke pemilik hanya dari kolom sewa.</div>`,
+    onSubmit: async (d) => {
+      d.monthly_rent = num(d.monthly_rent);
+      d.other_monthly_cost = num(d.other_monthly_cost);
+      await api(c.id ? "PUT" : "POST", c.id ? `/units/contracts/${c.id}` : "/units/contracts", d);
+      if (!c.id) state.cache.vehicles = await get("/vehicles");
+      toast("Kontrak disimpan");
+      reload();
+    },
+  });
+  document.getElementById("newContract")?.addEventListener("click", () => form());
+  box.querySelectorAll("[data-edit]").forEach((b) => (b.onclick = () => form(list.find((c) => c.id === Number(b.dataset.edit)))));
+}
+
+// ---------------------------------------------------------------- tagihan sewa
+async function renderBills(box, month) {
+  const list = await get(`/units/rent-bills?month=${month}`);
+  const total = (k) => list.filter((b) => b.state === "posted").reduce((a, b) => a + Number(b[k]), 0);
+  box.innerHTML = `
+    <div class="tiles">${tile(`Tagihan sewa ${monthName(month)}`, total("amount"), "out", `${list.filter((b) => b.state === "posted").length} tagihan`)}
+      ${tile("Sudah dibayar", total("paid"), "")}${tile("Belum dibayar", total("residual"), total("residual") > 0 ? "warn" : "")}</div>
+    <div class="panel"><h2>Tagihan sewa ${esc(monthName(month))}
+        ${canFinance() ? `<span class="spacer"></span><button class="primary small" id="genBills">Buat tagihan sewa ${esc(monthName(month))}</button>` : ""}</h2>
+      ${table(`<th>Nomor</th><th>Unit</th><th>Pemilik</th><th class="num">Hari</th><th class="num">Tagihan</th><th class="num">Dibayar</th><th class="num">Sisa</th><th>Jatuh tempo</th><th>Status</th><th></th>`,
+        list.map((b) => `<tr class="${b.state === "cancelled" ? "rev" : ""}"><td><b>${esc(b.number)}</b></td><td>${esc(b.plate_number)}</td><td>${esc(b.partner || "-")}</td>
+          <td class="num">${b.days}</td><td class="num">${rp(b.amount)}</td><td class="num">${rp(b.paid)}</td><td class="num">${rp(b.residual)}</td>
+          <td>${b.due_date ? tgl(b.due_date) : "-"}</td>
+          <td>${b.state === "cancelled" ? `<span class="badge cancelled">Batal</span><br><span class="muted">${esc(b.cancel_reason || "")}</span>`
+            : b.residual <= 0.004 ? `<span class="badge lunas">Lunas</span>` : `<span class="badge open">Belum lunas</span>`}
+            ${(b.payments || []).map((p) => `<div class="muted small-text">${tgl(p.pay_date)} ${rp(p.amount)} ${esc(p.bank || "")}${p.note ? ` · ${esc(p.note)}` : ""}
+              ${canFinance() && !p.reversed && p.amount > 0 ? ` <a href="#" data-rev="${p.id}">batal bayar</a>` : ""}</div>`).join("")}</td>
+          <td class="nowrap">${canFinance() && b.state === "posted" && b.residual > 0.004 ? `<button class="small primary" data-pay="${b.id}">Bayar</button>` : ""}
+            ${canFinance() && b.state === "posted" && Math.abs(b.paid) < 0.005 ? `<button class="small danger" data-cancel="${b.id}">Batalkan</button>` : ""}</td></tr>`).join(""),
+        "Belum ada tagihan sewa bulan ini")}
+      <div class="note-box">Tagihan dibuat satu per kontrak per bulan, prorata kalau sewa mulai / selesai di tengah bulan. Pembayaran sewa belum masuk ke
+        Kas &amp; Rekening / Jurnal Kas (menunggu keputusan finance cara pencatatannya).</div>
+    </div>`;
+  document.getElementById("genBills")?.addEventListener("click", () => openModal({
+    title: `Buat tagihan sewa ${monthName(month)}`,
+    body: `<div class="form-grid"><label>Jatuh tempo<input type="date" name="due_date"></label><label class="wide">Catatan<input name="note"></label></div>
+      <div class="note-box">Dibuat untuk semua kontrak yang berjalan di bulan ini dan belum punya tagihan.</div>`,
+    submitLabel: "Buat tagihan",
+    onSubmit: async (d) => {
+      const r = await api("POST", "/units/rent-bills/generate", { month, ...d });
+      toast(r.count ? `${r.count} tagihan dibuat, total ${rp(r.total)}` : "Semua kontrak sudah punya tagihan bulan ini");
+      reload();
+    },
+  }));
+  box.querySelectorAll("[data-pay]").forEach((btn) => (btn.onclick = () => {
+    const b = list.find((x) => x.id === Number(btn.dataset.pay));
+    openModal({
+      title: `Bayar ${b.number} (${b.plate_number})`,
+      body: `<div class="form-grid">
+        <label>Tanggal bayar<input type="date" name="pay_date" value="${new Date().toLocaleDateString("sv-SE", { timeZone: "Asia/Jakarta" })}"></label>
+        <label>Dari rekening<select name="bank_account_id">${options(banks(), banks().find((x) => x.is_default)?.id, bankLabel, null)}</select></label>
+        <label>Nominal<input class="num" name="amount" value="${rp(b.residual)}"></label>
+        <label class="wide">Catatan<input name="note"></label></div>`,
+      submitLabel: "Catat pembayaran",
+      onSubmit: async (d) => { d.amount = num(d.amount); await api("POST", `/units/rent-bills/${b.id}/pay`, d); toast("Pembayaran sewa dicatat"); reload(); },
+    });
+  }));
+  box.querySelectorAll("[data-cancel]").forEach((btn) => (btn.onclick = () => askReason("Batalkan tagihan sewa", "Tagihan bisa dibuat ulang setelah dibatalkan.",
+    (reason) => api("POST", `/units/rent-bills/${btn.dataset.cancel}/cancel`, { reason }), "Batalkan")));
+  box.querySelectorAll("[data-rev]").forEach((a) => (a.onclick = (e) => {
+    e.preventDefault();
+    askReason("Batal bayar sewa", "Dibuat baris pembalik (minus), pembayaran asli tetap tercatat.",
+      (reason) => api("POST", `/units/rent-payments/${a.dataset.rev}/reverse`, { reason }), "Batal bayar");
+  }));
+}

@@ -1,5 +1,5 @@
 // ERP AMICO v2: Express + PostgreSQL.
-//   npm start                 -> http://localhost:3200 (database tertanam di data/pg kalau DATABASE_URL kosong)
+//   npm start                 -> http://localhost:3200 (di laptop: database tertanam data/pg; online: lihat config.js)
 //   npm run user:add -- ...   -> buat user pertama (ADMIN)
 import express from "express";
 import path from "node:path";
@@ -14,6 +14,7 @@ import jobRoutes from "./routes/jobs.js";
 import financeRoutes from "./routes/finance.js";
 import reportRoutes from "./routes/reports.js";
 import sjRoutes from "./routes/sj.js";
+import unitRoutes from "./routes/units.js";
 
 export async function createApp(db) {
   const app = express();
@@ -27,6 +28,7 @@ export async function createApp(db) {
   app.use("/api", financeRoutes(db));
   app.use("/api", reportRoutes(db));
   app.use("/api", sjRoutes(db));
+  app.use("/api", unitRoutes(db));
   app.use("/api", (req, res) => res.status(404).json({ error: "Endpoint tidak ada" }));
   app.use(express.static(path.join(ROOT, "public")));
   return app;
@@ -41,7 +43,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const app = await createApp(db);
   app.listen(CONFIG.port, () => {
     console.log(`ERP AMICO v2 jalan di http://localhost:${CONFIG.port}`);
-    console.log(`Database: ${CONFIG.databaseUrl ? "PostgreSQL (DATABASE_URL)" : `tertanam di ${CONFIG.dataDir}`}`);
+    console.log(`Database: ${db.kind === "postgres" ? `PostgreSQL (DATABASE_URL, ${new URL(CONFIG.databaseUrl).hostname})` : `tertanam di ${CONFIG.dataDir}`}`);
     if (!n) console.log('Belum ada user. Buat dulu: npm run user:add -- admin "Nama Admin" ADMIN');
   });
 }
