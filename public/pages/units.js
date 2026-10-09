@@ -267,13 +267,15 @@ async function renderContracts(box) {
         list.map((c) => `<tr><td><b>${esc(c.plate_number)}</b><br><span class="muted">${esc(c.truck_type)}</span></td><td>${esc(c.partner || "-")}</td>
           <td>${tgl(c.date_start)}</td><td>${c.date_end ? tgl(c.date_end) : "-"}</td><td class="num">${rp(c.monthly_rent)}</td><td class="num">${rp(c.other_monthly_cost)}</td>
           <td>${c.berjalan ? `<span class="badge posted">Berjalan</span>` : `<span class="badge cancelled">Selesai</span>`}</td><td class="small-text">${esc(c.note || "")}</td>
-          <td>${canFinance() ? `<button class="small" data-edit="${c.id}">Ubah</button>` : ""}</td></tr>`).join(""), "Belum ada kontrak sewa")}
+          <td class="nowrap">${canFinance() ? `<button class="small" data-edit="${c.id}">Ubah</button> <button class="small danger" data-del="${c.id}">Hapus</button>` : ""}</td></tr>`).join(""), "Belum ada kontrak sewa")}
       <div class="note-box">Harga sewa berubah? Isi tanggal selesai di kontrak lama, lalu buat kontrak baru mulai tanggal harga baru, supaya bulan-bulan lama tetap memakai harga lama.</div>
     </div>`;
   const form = (c = {}) => openModal({
     title: c.id ? `Ubah kontrak ${c.plate_number}` : "Kontrak sewa baru",
     body: `<div class="form-grid">
-      ${c.id ? `<input type="hidden" name="vehicle_id" value="${c.vehicle_id}"><label>Unit<input value="${esc(c.plate_number)}" disabled></label>`
+      ${c.id ? `<input type="hidden" name="vehicle_id" value="${c.vehicle_id}">
+           <label>Plat<input name="plate_number" value="${esc(c.plate_number)}" required></label>
+           <label>Jenis truk<input name="truck_type" list="truckTypesU" value="${esc(c.truck_type || "")}"><datalist id="truckTypesU">${["CDD", "CDDL", "CDEL", "FUSO", "TRONTON", "WINGBOX"].map((x) => `<option value="${x}">`).join("")}</datalist></label>`
         : `<label>Unit (dari master)<select name="vehicle_id">${options(state.cache.vehicles.filter((v) => v.active), "", (v) => `${v.plate_number} - ${v.truck_type}`, "- unit baru, isi plat -")}</select></label>
            <label>Plat unit baru<input name="plate_number" placeholder="B 1234 HQ"></label>
            <label>Jenis truk<input name="truck_type" list="truckTypesU" placeholder="CDDL"><datalist id="truckTypesU">${["CDD", "CDDL", "FUSO", "TRONTON", "WINGBOX"].map((x) => `<option value="${x}">`).join("")}</datalist></label>`}
@@ -283,18 +285,24 @@ async function renderContracts(box) {
       <label>Sewa per bulan<input class="num" name="monthly_rent" value="${c.monthly_rent ? rp(c.monthly_rent) : ""}" required></label>
       <label>Biaya tetap lain per bulan<input class="num" name="other_monthly_cost" value="${c.other_monthly_cost ? rp(c.other_monthly_cost) : ""}" placeholder="asuransi, GPS (opsional)"></label>
       <label class="wide">Catatan<input name="note" value="${esc(c.note || "")}"></label></div>
-      <div class="note-box">Biaya per hari = (sewa + biaya tetap lain) / jumlah hari di bulan itu. Tagihan sewa ke pemilik hanya dari kolom sewa.</div>`,
+      <div class="note-box">Biaya per hari = (sewa + biaya tetap lain) / jumlah hari di bulan itu. Tagihan sewa ke pemilik hanya dari kolom sewa.
+        ${c.id ? "<br>Ganti plat = trip diambil dari job dengan plat baru. Kalau plat itu sudah ada di Master Data &rsaquo; Kendaraan, kontrak pindah ke unit tersebut; plat & jenis truk juga ikut berubah di master." : ""}</div>`,
     onSubmit: async (d) => {
       d.monthly_rent = num(d.monthly_rent);
       d.other_monthly_cost = num(d.other_monthly_cost);
       await api(c.id ? "PUT" : "POST", c.id ? `/units/contracts/${c.id}` : "/units/contracts", d);
-      if (!c.id) state.cache.vehicles = await get("/vehicles");
+      state.cache.vehicles = await get("/vehicles");
       toast("Kontrak disimpan");
       reload();
     },
   });
   document.getElementById("newContract")?.addEventListener("click", () => form());
   box.querySelectorAll("[data-edit]").forEach((b) => (b.onclick = () => form(list.find((c) => c.id === Number(b.dataset.edit)))));
+  box.querySelectorAll("[data-del]").forEach((b) => (b.onclick = () => {
+    const c = list.find((x) => x.id === Number(b.dataset.del));
+    askReason(`Hapus kontrak ${c.plate_number}`, "Hanya bisa kalau kontrak belum punya tagihan sewa. Unit tetap ada di Master Data > Kendaraan.",
+      (reason) => api("DELETE", `/units/contracts/${c.id}`, { reason }), "Hapus kontrak");
+  }));
 }
 
 // ---------------------------------------------------------------- tagihan sewa

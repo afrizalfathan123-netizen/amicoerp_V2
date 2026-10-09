@@ -437,6 +437,17 @@ try {
     assert.deepEqual([after.paid, after.residual], [0, 15000000]);
     // harga sewa sudah ditagih tidak bisa diubah di kontrak yang sama
     assert.match(await fin.call("PUT", `/units/contracts/${c1.id}`, { vehicle_id: u.vehicle_id, date_start: "2026-09-01", monthly_rent: 16000000 }, 400), /sudah ditagih/);
+    // ubah jenis truk / plat dari form kontrak, hapus kontrak (yang sudah ditagih tidak bisa)
+    await fin.call("PUT", `/units/contracts/${c1.id}`, { vehicle_id: u.vehicle_id, plate_number: "B 1234 HQ", truck_type: "cdel", date_start: "2026-09-01", monthly_rent: 15000000 });
+    assert.equal((await viewer.call("GET", "/vehicles")).find((v) => v.id === u.vehicle_id).truck_type, "CDEL");
+    const c3 = await fin.call("POST", "/units/contracts", { plate_number: "B 5555 ZZ", truck_type: "CDDL", date_start: "2026-11-01", monthly_rent: 1000000 });
+    await fin.call("PUT", `/units/contracts/${c3.id}`, { vehicle_id: (await viewer.call("GET", "/units/contracts")).find((x) => x.id === c3.id).vehicle_id,
+      plate_number: "b 5556 zz", truck_type: "CDDL", date_start: "2026-11-01", monthly_rent: 1000000 });
+    assert.equal((await viewer.call("GET", "/units/contracts")).find((x) => x.id === c3.id).plate_number, "B 5556 ZZ");
+    assert.match(await fin.call("DELETE", `/units/contracts/${c3.id}`, {}, 400), /Alasan/);
+    await fin.call("DELETE", `/units/contracts/${c3.id}`, { reason: "salah input" });
+    assert.ok(!(await viewer.call("GET", "/units/contracts")).some((x) => x.id === c3.id));
+    assert.match(await fin.call("DELETE", `/units/contracts/${c1.id}`, { reason: "coba" }, 400), /tagihan sewa/);
   });
 
   await step("dashboard, rekap, aging, export Excel", async () => {

@@ -252,6 +252,35 @@ export default function unitRoutes(db) {
      from vehicle_contract c join vehicle v on v.id = c.vehicle_id left join res_partner p on p.id = c.partner_id
      order by berjalan desc, v.plate_number, c.date_start desc`)));
 
+  // ganti plat / jenis truk dari form kontrak. Plat baru yang sudah ada di master -> kontrak pindah ke unit itu;
+  // unit lama yang jadi tidak terpakai (tanpa kontrak lain & tanpa job) dihapus. Plat baru yang belum ada -> unit ini diganti platnya
+  // (kalau unit ini juga dipakai kontrak lain / job, dibuat unit baru supaya data lain tidak ikut berubah).
+  const changeUnit = async (t, contractId, curId, b) => {
+    const [cur] = await t.query("select * from vehicle where id = $1 for update", [curId]);
+    if (!cur) fail("Unit tidak ditemukan", 404);
+    const plate = normPlate(b.plate_number);
+    const truck = String(b.truck_type || "").trim().toUpperCase();
+    const key = (x) => String(x || "").replace(/\s/g, "").toUpperCase();
+    const usedElsewhere = async (vid) => (await t.query(
+      "select (select count(*) from vehicle_contract where vehicle_id = $1 and id <> $2)::int + (select count(*) from job where vehicle_id = $1)::int as n",
+      [vid, contractId]))[0].n > 0;
+    if (!plate || key(plate) === key(cur.plate_number)) {
+      if (truck && truck !== cur.truck_type) await t.query("update vehicle set truck_type = $1 where id = $2", [truck, cur.id]);
+      return { vid: cur.id, orphan: null };
+    }
+    const [ex] = await t.query("select id from vehicle where upper(regexp_replace(plate_number, '\\s', '', 'g')) = $1 and id <> $2", [key(plate), cur.id]);
+    if (ex) {
+      if (truck) await t.query("update vehicle set truck_type = $1 where id = $2", [truck, ex.id]);
+      return { vid: ex.id, orphan: (await usedElsewhere(cur.id)) ? null : cur.id };
+    }
+    if (!(await usedElsewhere(cur.id))) {
+      await t.query("update vehicle set plate_number = $1, truck_type = $2 where id = $3", [plate, truck || cur.truck_type, cur.id]);
+      return { vid: cur.id, orphan: null };
+    }
+    const vid = await insertRow(t, "vehicle", { plate_number: plate, truck_type: truck || cur.truck_type, owner_partner_id: cur.owner_partner_id, pic: cur.pic });
+    return { vid, orphan: null };
+  };
+
   const saveContract = async (t, req, id) => {
     const b = req.body || {};
     let vehicleId = Number(b.vehicle_id) || null;
@@ -262,6 +291,14 @@ export default function unitRoutes(db) {
       const [ex] = await t.query("select id from vehicle where upper(regexp_replace(plate_number, '\\s', '', 'g')) = $1", [plate.replace(/\s/g, "")]);
       vehicleId = ex?.id || await insertRow(t, "vehicle", { plate_number: plate, truck_type: String(b.truck_type || "").trim().toUpperCase() || "CDDL",
         owner_partner_id: b.partner_id ? Number(b.partner_id) : null });
+    }
+    let unitChange = null;
+    if (id && vehicleId && (b.plate_number || b.truck_type)) {
+      const [cv] = await t.query("select plate_number, truck_type from vehicle where id = $1", [vehicleId]);
+      unitChange = await changeUnit(t, id, vehicleId, b);
+      if (unitChange.vid !== vehicleId || normPlate(b.plate_number) !== normPlate(cv.plate_number) || (b.truck_type && b.truck_type.toUpperCase() !== cv.truck_type))
+        unitChange.dari = cv;
+      vehicleId = unitChange.vid;
     }
     if (!b.date_start) fail("Isi tanggal mulai sewa");
     if (b.date_end && b.date_end < b.date_start) fail("Tanggal selesai sebelum tanggal mulai");
@@ -284,7 +321,10 @@ export default function unitRoutes(db) {
         fail("Kontrak ini sudah ditagih. Untuk harga sewa baru, isi tanggal selesai kontrak ini lalu buat kontrak baru mulai tanggal harga baru.");
       await t.query(`update vehicle_contract set ${Object.keys(row).map((k, i) => `${k} = $${i + 1}`).join(", ")} where id = $${Object.keys(row).length + 1}`,
         [...Object.values(row), id]);
-      await audit(t, req, "vehicle_contract", id, "update", { dari: { sewa: old.monthly_rent, mulai: old.date_start, selesai: old.date_end }, ke: row });
+      if (unitChange?.orphan) await t.query("delete from vehicle where id = $1", [unitChange.orphan]);
+      await audit(t, req, "vehicle_contract", id, "update", { dari: { sewa: old.monthly_rent, mulai: old.date_start, selesai: old.date_end,
+        ...(unitChange?.dari ? { plat: unitChange.dari.plate_number, truk: unitChange.dari.truck_type } : {}) },
+        ke: { ...row, ...(unitChange?.dari ? { plat: normPlate(b.plate_number) || unitChange.dari.plate_number, truk: b.truck_type || unitChange.dari.truck_type } : {}) } });
       return id;
     }
     const newId = await insertRow(t, "vehicle_contract", { ...row, created_by: req.user.id });
@@ -293,6 +333,21 @@ export default function unitRoutes(db) {
   };
   r.post("/units/contracts", requireRole(ROLES.FINANCE), route((req) => db.tx(async (t) => ({ id: await saveContract(t, req, null) }))));
   r.put("/units/contracts/:id", requireRole(ROLES.FINANCE), route((req) => db.tx(async (t) => ({ id: await saveContract(t, req, Number(req.params.id)) }))));
+
+  // hapus kontrak: hanya kalau belum punya tagihan sewa (tagihan = dokumen keuangan). Unit tetap ada di master Kendaraan.
+  r.delete("/units/contracts/:id", requireRole(ROLES.FINANCE), route((req) => db.tx(async (t) => {
+    const id = Number(req.params.id);
+    const [c] = await t.query(
+      "select c.*, v.plate_number from vehicle_contract c join vehicle v on v.id = c.vehicle_id where c.id = $1 for update of c", [id]);
+    if (!c) fail("Kontrak tidak ditemukan", 404);
+    if (!String(req.body?.reason || "").trim()) fail("Alasan wajib diisi");
+    const [b] = await t.query("select count(*)::int as n from vehicle_rent_bill where contract_id = $1", [id]);
+    if (b.n) fail(`Kontrak ${c.plate_number} sudah punya ${b.n} tagihan sewa, jadi tidak bisa dihapus. Kalau sewanya sudah berhenti, isi tanggal selesai sewa.`);
+    await t.query("delete from vehicle_contract where id = $1", [id]);
+    await audit(t, req, "vehicle_contract", id, "delete",
+      { plat: c.plate_number, sewa: c.monthly_rent, mulai: c.date_start, selesai: c.date_end, alasan: req.body.reason });
+    return { ok: true };
+  })));
 
   // ---------------------------------------------------------------- tagihan sewa bulanan
   r.get("/units/rent-bills", read, route(async (req) => {
