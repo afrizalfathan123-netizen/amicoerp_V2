@@ -205,6 +205,9 @@ menyembunyikan tombol dengan `canFinance()`, `canJob()`, `isAdmin()`, tapi **ser
 - **PGlite = satu proses.** `data/pg` tidak bisa dibuka skrip saat `npm start` jalan. Untuk uji, salin dulu ke folder
   scratch. Setelah impor besar jalankan `analyze` (server menjalankannya saat start untuk PGlite).
 - `data/pg` berisi **data asli** pemilik (impor JOB REG + Job List v1). Jangan reset / hapus / impor ulang tanpa diminta.
+- Impor ulang JOB REG dengan reset (`importJobReg({ reset: true })`) menyimpan lalu memasang lagi data yang diisi di ERP
+  (unit, kontrak / tagihan / pembayaran sewa, SLA rute, price book) dalam satu transaksi. Tabel baru yang diisi manual di ERP
+  dan terkena `truncate ... cascade` harus ditambahkan ke `keepErpData` / `restoreErpData` di `lib/import-jobreg.js`.
 
 ---
 

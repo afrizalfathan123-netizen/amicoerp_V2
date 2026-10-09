@@ -55,7 +55,8 @@ Aturan pindah data ada di `db/import/amico_import.sql`. Yang penting:
 ```bash
 npm run import:jobreg -- "C:\path\JOB REGISTRATION.xlsx" --mulai AMC/2607/0001
 ```
-`--reset` mengosongkan data bisnis dulu (user & pengaturan tetap). File Excel hanya dibaca. Laporan
+`--reset` mengosongkan data bisnis dulu (user & pengaturan tetap). Data yang diisi di ERP dan tidak ada di Excel (unit,
+kontrak & tagihan sewa, SLA rute, price book) disimpan lalu dipasang lagi otomatis; semuanya satu transaksi (gagal = tidak berubah). File Excel hanya dibaca. Laporan
 `data/laporan-jobreg-*.xlsx` berisi RINGKASAN, PERLU DICEK (yang salah / janggal di Excel dan apa yang dilakukan
 importer), dan KURANG TRANSFER. Aturan ada di kepala `lib/import-jobreg.js`. Yang penting:
 - Kolom dicari dari nama header (kolom baru di Excel tidak menggeser hasil).

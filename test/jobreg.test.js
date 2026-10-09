@@ -199,6 +199,30 @@ await step("impor kedua ditolak kalau database sudah berisi job", async () => {
   await assert.rejects(importJobReg({ file, target: db, log: () => {} }), /sudah berisi 5 job/);
 });
 
+await step("impor ulang dengan reset: unit, kontrak & tagihan sewa, SLA, price book yang diisi di ERP tetap ada", async () => {
+  const [{ jobs }] = await db.query("select count(*)::int as jobs from job");
+  const loc = async (code) => (await db.query("insert into location (code, name) values ($1, $1) on conflict (code) do update set code = excluded.code returning id", [code]))[0].id;
+  const [v] = await db.query("insert into vehicle (plate_number, truck_type) values ('B 7777 SW', 'CDDL') returning id");
+  const [vend] = await db.query("insert into res_partner (code, name, is_vendor) values ('V-PEMILIK', 'PEMILIK UNIT', true) returning id");
+  const [c] = await db.query(`insert into vehicle_contract (vehicle_id, partner_id, date_start, monthly_rent) values ($1, $2, '2026-09-01', 15000000) returning id`, [v.id, vend.id]);
+  const [b] = await db.query(`insert into vehicle_rent_bill (number, contract_id, period, days, amount) values ('SWA/2609/0003', $1, '2026-09-01', 30, 15000000) returning id`, [c.id]);
+  const [bank] = await db.query("select id, name from res_bank_account order by id limit 1");
+  await db.query("insert into vehicle_rent_payment (bill_id, pay_date, amount, bank_account_id) values ($1, '2026-10-01', 5000000, $2)", [b.id, bank.id]);
+  await db.query("insert into route_sla (pol_id, pod_id, trip_type, sla_hours) values ($1, $2, 'ONE_WAY', 19)", [await loc("SLA-A"), await loc("SLA-B")]);
+  await db.query("insert into pricelist_item (pol_id, pod_id, truck_type, trip_type, selling, cost) values ($1, $2, 'CDDL', 'ONE_WAY', 900000, 700000)", [await loc("SLA-A"), await loc("SLA-B")]);
+  const again = await importJobReg({ file, target: db, start: "AMC/2607/0001", reset: true, log: () => {} });
+  assert.deepEqual(again.stats.erpKept, { unit: 1, kontrak: 1, tagihan_sewa: 1, bayar_sewa: 1, sla: 1, price_book: 1 });
+  assert.equal((await db.query("select count(*)::int as n from job"))[0].n, jobs);
+  const [k] = await db.query(`select v.plate_number, p.name, c.monthly_rent from vehicle_contract c join vehicle v on v.id = c.vehicle_id
+    left join res_partner p on p.id = c.partner_id`);
+  assert.deepEqual([k.plate_number, k.name, k.monthly_rent], ["B 7777 SW", "PEMILIK UNIT", 15000000]);
+  const [bb] = await db.query("select number, paid, residual from v_vehicle_rent_bill");
+  assert.deepEqual([bb.number, bb.paid, bb.residual], ["SWA/2609/0003", 5000000, 10000000]);
+  assert.equal((await db.query("select next_number from ir_sequence where name = 'SWA/2609'"))[0].next_number, 4);
+  assert.equal((await db.query("select count(*)::int as n from route_sla"))[0].n, 1);
+  assert.equal((await db.query("select count(*)::int as n from pricelist_item"))[0].n, 1);
+});
+
 await step("laporan Excel ditulis", async () => {
   const out = await writeJobRegReport(db, result, path.join(dir, "laporan.xlsx"));
   const rep = new ExcelJS.Workbook();
