@@ -16,6 +16,7 @@ import express from "express";
 import { requireRole, assertRole, ROLES } from "../lib/auth.js";
 import { route, fail, money, rupiah, today, insertRow, nextNumber, audit, setting } from "../lib/util.js";
 import { compareJobReg, saveJobRegSnapshot } from "../lib/import-jobreg.js";
+import { parseNumbers } from "./jobs.js";
 
 const PHASES = ["DP", "SETTLEMENT", "FULL", "OTHER"];
 const KINDS = ["TRUCKING", "CALO", "TOL", "PARKIR", "BONGKAR", "LAINNYA"];
@@ -23,7 +24,8 @@ export const DP_PCT = { "70_30": 0.7, "50_50": 0.5 };
 
 // ---------------------------------------------------------------- calon baris dokumen
 // Customer: per job (nominal dibagi ke semua baris selling job itu). Vendor: per baris order.
-export async function eligible(t, { move_type, phase, partner_id, job_ids, exclude_move_id = 0, search, sj_received }) {
+// numbers: daftar tempel no job / kode tugas (huruf besar / kecil & spasi diabaikan); cocok dengan salah satunya
+export async function eligible(t, { move_type, phase, partner_id, job_ids, exclude_move_id = 0, search, sj_received, numbers }) {
   if (!PHASES.includes(phase)) fail("Fase tidak dikenal");
   const sale = move_type === "out_invoice";
   if (sale && phase === "OTHER") fail("Invoice customer tidak memakai fase OTHER");
@@ -36,6 +38,12 @@ export async function eligible(t, { move_type, phase, partner_id, job_ids, exclu
   if (partner_id) { params.push(Number(partner_id)); where.push(sale ? `j.customer_id = $${params.length}` : `jl.partner_id = $${params.length}`); }
   if (job_ids?.length) { params.push(job_ids.map(Number)); where.push(`j.id = any($${params.length}::int[])`); }
   if (search) { params.push(`%${search}%`); where.push(`(j.job_number ilike $${params.length} or j.plate_number ilike $${params.length})`); }
+  const nums = parseNumbers(numbers);
+  if (nums.length) {
+    params.push(nums);
+    where.push(`(upper(regexp_replace(j.job_number, '\\s', '', 'g')) = any($${params.length}::text[])
+                 or upper(regexp_replace(coalesce(j.do_number, ''), '\\s', '', 'g')) = any($${params.length}::text[]))`);
+  }
   if (sj_received === "1" || sj_received === true) where.push("j.sj_received_at is not null");
 
   const rows = await t.query(
@@ -269,6 +277,9 @@ export default function financeRoutes(db) {
 
   r.get("/moves/eligible", requireRole(ROLES.READ), route((req) => eligible(db, {
     ...req.query, job_ids: req.query.job_ids ? String(req.query.job_ids).split(",") : null })));
+  // sama, untuk daftar tempel yang panjang (tidak muat di URL). Hanya membaca.
+  r.post("/moves/eligible", requireRole(ROLES.READ), route((req) => eligible(db, {
+    ...(req.body || {}), job_ids: Array.isArray(req.body?.job_ids) && req.body.job_ids.length ? req.body.job_ids : null })));
 
   r.get("/moves", requireRole(ROLES.READ), route(async (req) => {
     const params = [];

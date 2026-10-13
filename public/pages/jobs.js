@@ -3,6 +3,7 @@ import {
   state, api, get, view, esc, rp, tgl, jam, kv, tile, badge, options, enumOptions, table, toast, openModal, askReason,
   action, customers, vendors, partnerBanksOf, locLabel, num, today, debounce, bindRows, canJob, canFinance,
   KIND_LABEL, PHASE_LABEL, phaseLabel, SELLING_MODES, STAGE_LABEL, stageBadge, SJ_STATUS_LABEL, SJ_LATE_LABEL, BILL_LABEL, isAdmin, SCHEME_LABEL, SCHEME_SHORT, dtLocal, fromDtLocal, loadMaster,
+  latest, skelTable, skelTiles,
 } from "../lib.js";
 import { gateModal, positionModal } from "./tracker.js";
 import { ledgerTable, shortPanel } from "./reports.js";
@@ -57,7 +58,7 @@ export async function renderJobs() {
       <div class="actions"><a class="btn" id="exportJobs" title="Export job yang tampil di tabel">Export Excel</a>
         ${isAdmin() ? `<label class="btn" style="flex-direction:row" title="Lengkapi job dari export Job List ERP AMICO v1 (driver, gate, SJ, vendor, rekening) dan tambah job yang belum ada">Impor Job List v1<input type="file" id="importV1" accept=".xlsx" hidden></label>` : ""}
         ${canJob() ? `<button class="primary" id="newJob">+ Job baru</button>` : ""}</div></div>
-    <div class="tiles" id="stageTiles"></div>
+    <div class="tiles" id="stageTiles">${skelTiles(7)}</div>
     <div class="panel">
       <div class="filters">
         <label>Cari<input id="jSearch" placeholder="No job, plat, DO, customer, driver" value="${esc(f.search || "")}"></label>
@@ -69,7 +70,7 @@ export async function renderJobs() {
         <button id="jPaste" title="Tempel daftar no job / kode tugas dari Excel atau WhatsApp">Tempel daftar</button>
       </div>
       <div id="pasteBox"></div>
-      <div id="jobTable"></div>
+      <div id="jobTable">${skelTable(10, 8)}</div>
     </div>`;
   document.getElementById("newJob")?.addEventListener("click", () => jobForm());
   const el = (id) => document.getElementById(id);
@@ -107,13 +108,14 @@ export async function renderJobs() {
     }));
   };
 
+  const only = latest();   // mengetik cepat di kotak cari: hanya jawaban terakhir yang dipakai
   const load = async () => {
     const flt = Object.fromEntries(topIds.map((k) => [k.slice(1).toLowerCase(), el(k).value]));
     sessionStorage.setItem("jobFilter", JSON.stringify(flt));
+    const rows = await only(paste
+      ? api("POST", "/jobs/query", { numbers: paste.numbers, by: paste.by, limit: LIMIT })
+      : get(`/jobs?${new URLSearchParams({ ...flt, limit: LIMIT })}`));
     posMap = pos();
-    const rows = paste
-      ? await api("POST", "/jobs/query", { numbers: paste.numbers, by: paste.by, limit: LIMIT })
-      : await get(`/jobs?${new URLSearchParams({ ...flt, limit: LIMIT })}`);
     showPaste(rows);
     grid.setRows(rows);
     if (rows.length >= LIMIT) el("jobTable").insertAdjacentHTML("beforeend", `<div class="note-box">Ditampilkan ${rp(LIMIT)} job terbaru. Persempit dengan filter tanggal.</div>`);
@@ -159,17 +161,19 @@ export async function renderJobs() {
     location.href = `/api/export/job-list.xlsx?${q}`;
   };
   el("importV1")?.addEventListener("change", (e) => importV1Modal(e.target.files[0], load));
-  // ringkasan per status, klik untuk memfilter
-  const sum = await get("/sj/summary");
-  el("stageTiles").innerHTML = ["RENCANA", "JALAN", "MENUNGGU_SJ", "SIAP_TAGIH", "KIRIM_SJ", "MENUNGGU_BAYAR", "SELESAI"].map((s) =>
-    `<a href="#" class="tile" data-stage="${s}"><div class="label">${esc(STAGE_LABEL[s])}</div><div class="value">${rp(sum.stages[s] || 0)}</div></a>`).join("");
-  el("stageTiles").querySelectorAll("[data-stage]").forEach((a) => (a.onclick = (e) => {
-    e.preventDefault();
-    if (paste) return toast("Hapus daftar tempel dulu untuk memfilter per status", true);
-    el("jStage").value = el("jStage").value === a.dataset.stage ? "" : a.dataset.stage;
-    load();
-  }));
-  await load();
+  // ringkasan per status, klik untuk memfilter. Dimuat bersamaan dengan daftar job, tidak saling menunggu.
+  const tiles = async () => {
+    const sum = await get("/sj/summary");
+    el("stageTiles").innerHTML = ["RENCANA", "JALAN", "MENUNGGU_SJ", "SIAP_TAGIH", "KIRIM_SJ", "MENUNGGU_BAYAR", "SELESAI"].map((s) =>
+      `<a href="#" class="tile" data-stage="${s}"><div class="label">${esc(STAGE_LABEL[s])}</div><div class="value">${rp(sum.stages[s] || 0)}</div></a>`).join("");
+    el("stageTiles").querySelectorAll("[data-stage]").forEach((a) => (a.onclick = (e) => {
+      e.preventDefault();
+      if (paste) return toast("Hapus daftar tempel dulu untuk memfilter per status", true);
+      el("jStage").value = el("jStage").value === a.dataset.stage ? "" : a.dataset.stage;
+      load();
+    }));
+  };
+  await Promise.all([tiles(), load()]);
 }
 
 // Impor export Job List v1: pratinjau dulu, lalu simpan

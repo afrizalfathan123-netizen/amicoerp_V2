@@ -95,17 +95,27 @@ export default function sjRoutes(db) {
   }));
 
   r.get("/sj/summary", read, route(async () => {
-    const [s] = await db.query(
-      `select count(*) filter (where sj_status = 'BELUM_ADA_RESI')::int as belum_ada_resi,
+    // satu kali hitung status semua job (view-nya berat), dikelompokkan per tahap; job batal = tahap BATAL, tidak ikut angka SJ
+    const rows = await db.query(
+      `select stage, count(*)::int as n,
+              count(*) filter (where sj_status = 'BELUM_ADA_RESI')::int as belum_ada_resi,
               count(*) filter (where sj_status = 'DI_KURIR')::int as di_kurir,
               count(*) filter (where sj_status = 'DITERIMA')::int as diterima_belum_kirim,
               count(*) filter (where sj_late = 'RESI_TERLAMBAT')::int as resi_terlambat,
               count(*) filter (where sj_late = 'KURIR_NYANGKUT')::int as kurir_nyangkut,
               count(*) filter (where sj_late = 'TERLAMBAT_KIRIM')::int as terlambat_kirim,
-              round(avg(lead_time_sj) filter (where lead_time_sj is not null), 1) as rata_lead_time
-       from v_job_status st join job j on j.id = st.job_id where j.state <> 'cancelled'`);
-    const stages = await db.query("select stage, count(*)::int as n from v_job_status group by 1");
-    return { ...s, stages: Object.fromEntries(stages.map((x) => [x.stage, x.n])) };
+              coalesce(sum(lead_time_sj), 0)::float as lead_sum, count(lead_time_sj)::int as lead_n
+       from v_job_status group by stage`);
+    const s = { belum_ada_resi: 0, di_kurir: 0, diterima_belum_kirim: 0, resi_terlambat: 0, kurir_nyangkut: 0, terlambat_kirim: 0 };
+    let leadSum = 0, leadN = 0;
+    for (const x of rows) {
+      if (x.stage === "BATAL") continue;
+      for (const k of Object.keys(s)) s[k] += x[k];
+      leadSum += x.lead_sum;
+      leadN += x.lead_n;
+    }
+    return { ...s, rata_lead_time: leadN ? Math.round((leadSum / leadN) * 10) / 10 : null,
+      stages: Object.fromEntries(rows.map((x) => [x.stage, x.n])) };
   }));
 
   // Input massal. mode: resi (driver kirim SJ) | received (SJ diterima di AMICO). dry_run = pratinjau saja.

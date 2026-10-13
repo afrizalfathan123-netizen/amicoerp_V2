@@ -2,7 +2,7 @@
 // Alur: gate in -> driver kirim SJ lewat kurir (resi) -> SJ diterima di AMICO -> siap ditagih -> dikirim ke customer.
 import {
   api, get, view, esc, rp, tgl, jam, tile, table, toast, openModal, askReason, enumOptions, options, customers, debounce, bindRows,
-  canJob, today, state, SJ_STATUS_LABEL, SJ_LATE_LABEL, BILL_LABEL,
+  canJob, today, state, SJ_STATUS_LABEL, SJ_LATE_LABEL, BILL_LABEL, latest, skelTable, pagedTable,
 } from "../lib.js";
 
 const TABS = { track: "Pemantauan", quick: "Input cepat", send: "Pengiriman ke customer" };
@@ -44,17 +44,18 @@ async function renderTracking(box) {
       <label>Customer<select id="sCust">${options(customers(), f.customer_id, undefined, "Semua customer")}</select></label>
       <label>Cari<input id="sSearch" placeholder="No job, SJ, plat, resi" value="${esc(f.search || "")}"></label>
       <label class="check"><input type="checkbox" id="sLate" ${f.late === "1" ? "checked" : ""}> Hanya yang terlambat</label>
-    </div><div id="sTable"></div>
+    </div><div id="sTable">${skelTable(8, 7)}</div>
     <div class="note-box">Customer yang SJ-nya tidak dikirim lewat kurir (mis. dalam kota) bisa dimatikan "Lacak SJ"-nya di Master Data &rsaquo; Partner.</div></div>`;
   const el = (k) => document.getElementById(k);
+  const only = latest();
   const load = async () => {
     const flt = { status: el("sStatus").value, customer_id: el("sCust").value, search: el("sSearch").value, late: el("sLate").checked ? "1" : "" };
     sessionStorage.setItem("sjFilter", JSON.stringify(flt));
-    const rows = await get(`/sj/tracking?${new URLSearchParams(flt)}`);
-    el("sTable").innerHTML = table(
-      `<th>Job</th><th>Customer / rute</th><th>Driver</th><th>Gate in</th><th>Resi dari driver</th><th>SJ diterima</th>
+    const rows = await only(get(`/sj/tracking?${new URLSearchParams(flt)}`));
+    pagedTable(el("sTable"), { rows, empty: "Tidak ada",
+      head: `<th>Job</th><th>Customer / rute</th><th>Driver</th><th>Gate in</th><th>Resi dari driver</th><th>SJ diterima</th>
        <th class="num">Lead time</th><th class="num">Di kurir</th><th>Status</th>`,
-      rows.map((r) => `<tr class="click" data-href="#/jobs/${r.job_id}">
+      row: (r) => `<tr class="click" data-href="#/jobs/${r.job_id}">
         <td><b>${esc(r.job_number)}</b><br><span class="muted">${esc(r.sj_number || "")}</span></td>
         <td>${esc(r.customer)}<br><span class="muted">${esc(r.pol)} - ${esc(r.pod)} · ${esc(r.plate_number || "")}</span></td>
         <td>${esc(r.driver1_name || "")}<br><span class="muted">${esc(r.driver1_phone || "")}</span></td>
@@ -62,9 +63,7 @@ async function renderTracking(box) {
         <td>${esc(r.sj_resi_number || "")}<br><span class="muted">${tgl(r.sj_resi_received_at)}</span></td>
         <td>${tgl(r.sj_received_at)}</td>
         <td class="num">${days(r.lead_time_sj)}</td><td class="num">${days(r.hari_di_kurir)}</td>
-        <td>${esc(SJ_STATUS_LABEL[r.sj_status] || "")}${r.sj_late ? `<br><span class="badge warn">${esc(SJ_LATE_LABEL[r.sj_late])}</span>` : ""}</td></tr>`).join(""),
-      "Tidak ada");
-    bindRows(el("sTable"));
+        <td>${esc(SJ_STATUS_LABEL[r.sj_status] || "")}${r.sj_late ? `<br><span class="badge warn">${esc(SJ_LATE_LABEL[r.sj_late])}</span>` : ""}</td></tr>` });
   };
   for (const k of ["sStatus", "sCust", "sLate"]) el(k).onchange = load;
   el("sSearch").oninput = debounce(load);

@@ -1,7 +1,7 @@
 // Laporan: Rekap Posisi, Jurnal Kas, Utang Piutang, Kas & Rekening.
 import { signed,
   state, api, get, view, esc, rp, tgl, tile, options, enumOptions, table, toast, openModal, customers, bankLabel, num, today,
-  debounce, bindRows, canFinance, PHASE_LABEL,
+  debounce, bindRows, canFinance, PHASE_LABEL, latest, skelTable, pagedTable,
 } from "../lib.js";
 
 const SIDES = {
@@ -9,17 +9,24 @@ const SIDES = {
   SALE: { title: "Customer (piutang)", notBilled: "Belum ditagih", outstanding: "Ditagih, belum dibayar", hint: "uang yang harus customer bayar ke AMICO" },
 };
 
-export function ledgerTable(rows, withJob = true) {
+// bagian tabel jurnal kas: total di kaki tabel selalu dari SEMUA baris, bukan hanya halaman yang tampil
+function ledgerParts(rows, withJob) {
   let masuk = 0, keluar = 0;
   for (const r of rows) r.arah === "MASUK" ? (masuk += r.nominal) : (keluar += r.nominal);
-  return table(
-    `<th>Tgl</th>${withJob ? "<th>Job</th>" : ""}<th>Arah</th><th>Jenis</th><th class="num">Porsi</th><th>Pihak</th><th class="num">Nominal</th><th>Rekening</th><th>No bayar</th><th>Dokumen</th><th>Membalik</th>`,
-    rows.map((r) => `<tr class="${r.membalik ? "rev" : r.arah === "MASUK" ? "in" : "out"}">
+  return {
+    head: `<th>Tgl</th>${withJob ? "<th>Job</th>" : ""}<th>Arah</th><th>Jenis</th><th class="num">Porsi</th><th>Pihak</th><th class="num">Nominal</th><th>Rekening</th><th>No bayar</th><th>Dokumen</th><th>Membalik</th>`,
+    row: (r) => `<tr class="${r.membalik ? "rev" : r.arah === "MASUK" ? "in" : "out"}">
       <td>${tgl(r.tanggal)}</td>${withJob ? `<td><a href="#/jobs/${r.job_id}">${esc(r.job_number)}</a></td>` : ""}
       <td>${esc(r.arah)}</td><td>${esc(r.jenis)}</td><td class="num">${r.porsi}%</td><td>${esc(r.pihak || "")}</td>
       <td class="num">${rp(r.nominal)}</td><td>${esc(r.rekening || "")}</td><td>${esc(r.payment_number)}</td><td>${esc(r.move_number || "")}</td><td>${esc(r.membalik || "")}</td>
-    </tr>`).join(""), "Belum ada uang masuk / keluar",
-    `<tr><td colspan="${withJob ? 6 : 5}">Masuk ${rp(masuk)} &middot; Keluar ${rp(keluar)} &middot; Saldo</td><td class="num">${rp(masuk - keluar)}</td><td colspan="4"></td></tr>`);
+    </tr>`,
+    empty: "Belum ada uang masuk / keluar",
+    foot: `<tr><td colspan="${withJob ? 6 : 5}">Masuk ${rp(masuk)} &middot; Keluar ${rp(keluar)} &middot; Saldo</td><td class="num">${rp(masuk - keluar)}</td><td colspan="4"></td></tr>`,
+  };
+}
+export function ledgerTable(rows, withJob = true) {
+  const p = ledgerParts(rows, withJob);
+  return table(p.head, rows.map(p.row).join(""), p.empty, p.foot);
 }
 
 export function shortPanel(rows) {
@@ -108,11 +115,12 @@ async function drillJobs(flt) {
   openModal({
     title: `${s.title} - ${PHASE_LABEL[flt.phase]} - ${label} (${rows.length} job)`,
     wide: true,
-    body: `<div style="max-height:60vh;overflow:auto">${table(
-      `<th>Job</th><th>Tgl</th><th>Customer</th><th class="num">Rencana</th><th class="num">${esc(s.notBilled)}</th><th class="num">${esc(s.outstanding)}</th><th class="num">Dibayar</th>`,
-      rows.map((r) => `<tr><td><a href="#/jobs/${r.job_id}" data-close>${esc(r.job_number)}</a></td><td>${tgl(r.job_date)}</td><td>${esc(r.customer)}</td>
-        <td class="num">${rp(r.planned)}</td><td class="num">${rp(r.not_billed)}</td><td class="num">${rp(r.outstanding)}</td><td class="num">${rp(r.paid)}</td></tr>`).join(""))}</div>`,
-    onOpen: (form) => form.querySelectorAll("a[data-close]").forEach((a) => a.addEventListener("click", () => document.getElementById("modal").close())),
+    body: `<div id="drillBox" style="max-height:60vh;overflow:auto"></div>`,
+    // klik no job = pindah halaman, modal ditutup oleh router
+    onOpen: (form) => pagedTable(form.querySelector("#drillBox"), { rows,
+      head: `<th>Job</th><th>Tgl</th><th>Customer</th><th class="num">Rencana</th><th class="num">${esc(s.notBilled)}</th><th class="num">${esc(s.outstanding)}</th><th class="num">Dibayar</th>`,
+      row: (r) => `<tr><td><a href="#/jobs/${r.job_id}">${esc(r.job_number)}</a></td><td>${tgl(r.job_date)}</td><td>${esc(r.customer)}</td>
+        <td class="num">${rp(r.planned)}</td><td class="num">${rp(r.not_billed)}</td><td class="num">${rp(r.outstanding)}</td><td class="num">${rp(r.paid)}</td></tr>` }),
   });
 }
 
@@ -128,15 +136,17 @@ export async function renderLedger() {
         <label>Sampai<input type="date" id="lTo" value="${esc(f.to || "")}"></label>
         <label>Cari<input id="lSearch" placeholder="Job, pihak, dokumen" value="${esc(f.search || "")}"></label>
       </div>
-      <div id="ledgerBox"></div>
+      <div id="ledgerBox">${skelTable(10, 8)}</div>
     </div>`;
   const el = (id) => document.getElementById(id);
+  const only = latest();
   const load = async () => {
     const flt = { from: el("lFrom").value, to: el("lTo").value, search: el("lSearch").value };
     sessionStorage.setItem("ledgerFilter", JSON.stringify(flt));
     const qs = new URLSearchParams(flt).toString();
     el("exportLedger").href = `/api/export/jurnal-kas.xlsx?${qs}`;
-    el("ledgerBox").innerHTML = ledgerTable(await get(`/ledger?${qs}`));
+    const rows = await only(get(`/ledger?${qs}`));
+    pagedTable(el("ledgerBox"), { rows, ...ledgerParts(rows, true) });
   };
   el("lFrom").onchange = load; el("lTo").onchange = load; el("lSearch").oninput = debounce(load);
   await load();
@@ -157,16 +167,17 @@ export async function renderUtangPiutang() {
   view().innerHTML = `
     <div class="page-head"><h1>Utang Piutang</h1><span class="sub">Format sheet UTANG PIUTANG finance, dihitung langsung dari dokumen & pembayaran</span>
       <div class="spacer"></div><div class="actions"><a class="btn" href="/api/export/utang-piutang.xlsx">Export Excel</a></div></div>
-    <div class="panel"><div class="filters"><label>Cari<input id="upSearch" placeholder="Job, customer, rute / plat"></label></div><div id="upBox"></div></div>`;
+    <div class="panel"><div class="filters"><label>Cari<input id="upSearch" placeholder="Job, customer, rute / plat"></label></div><div id="upBox">${skelTable(10, 8)}</div></div>`;
+  const only = latest();
   const load = async () => {
-    const rows = await get(`/utang-piutang?search=${encodeURIComponent(document.getElementById("upSearch").value)}`);
+    const rows = await only(get(`/utang-piutang?search=${encodeURIComponent(document.getElementById("upSearch").value)}`));
+    // total = semua baris hasil cari, bukan hanya halaman yang tampil
     const sum = Object.fromEntries(UP_COLS.map(([, k]) => [k, rows.reduce((s, r) => s + Number(r[k] || 0), 0)]));
-    document.getElementById("upBox").innerHTML = table(
-      `<th>JOB NUMBER</th><th>CUSTOMER</th><th>KETERANGAN</th>${UP_COLS.map(([h]) => `<th class="num">${h}</th>`).join("")}`,
-      rows.map((r) => `<tr class="click" data-href="#/jobs/${r.job_id}"><td><b>${esc(r.job_number)}</b></td><td>${esc(r.customer)}</td><td>${esc(r.keterangan)}</td>
-        ${UP_COLS.map(([, k]) => `<td class="num">${rp(r[k])}</td>`).join("")}</tr>`).join(""), "Belum ada job",
-      `<tr><td colspan="3">Total</td>${UP_COLS.map(([, k]) => `<td class="num">${rp(sum[k])}</td>`).join("")}</tr>`);
-    bindRows(document.getElementById("upBox"));
+    pagedTable(document.getElementById("upBox"), { rows, empty: "Belum ada job",
+      head: `<th>JOB NUMBER</th><th>CUSTOMER</th><th>KETERANGAN</th>${UP_COLS.map(([h]) => `<th class="num">${h}</th>`).join("")}`,
+      row: (r) => `<tr class="click" data-href="#/jobs/${r.job_id}"><td><b>${esc(r.job_number)}</b></td><td>${esc(r.customer)}</td><td>${esc(r.keterangan)}</td>
+        ${UP_COLS.map(([, k]) => `<td class="num">${rp(r[k])}</td>`).join("")}</tr>`,
+      foot: `<tr><td colspan="3">Total</td>${UP_COLS.map(([, k]) => `<td class="num">${rp(sum[k])}</td>`).join("")}</tr>` });
   };
   document.getElementById("upSearch").oninput = debounce(load);
   await load();

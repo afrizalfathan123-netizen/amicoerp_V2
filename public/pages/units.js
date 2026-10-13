@@ -1,6 +1,6 @@
 // Unit sewa: untung rugi per unit per bulan (+ rincian trip & kalender hari), kontrak sewa, tagihan sewa bulanan.
 import { get, api, view, esc, rp, tgl, jam, table, tile, toast, openModal, askReason, options, vendors, bankLabel, num, state,
-  canFinance, bindRows } from "../lib.js";
+  canFinance, bindRows, skelTable } from "../lib.js";
 import { xlTable } from "../xlfilter.js";
 
 const TABS = { profit: "Untung rugi", contracts: "Kontrak sewa", bills: "Tagihan sewa" };
@@ -41,7 +41,7 @@ export async function renderUnits() {
           <label>Sampai<input type="date" id="uTo" value="${esc(P.to)}"></label>` : ""}
       </div></div>
     <div class="tabs">${Object.entries(TABS).map(([k, l]) => `<a href="#" data-tab="${k}" class="${k === tab ? "active" : ""}">${esc(l)}</a>`).join("")}</div>
-    <div id="uBox"><p class="muted">Memuat...</p></div>`;
+    <div id="uBox">${skelTable(6, 7)}</div>`;
   view().querySelectorAll("[data-tab]").forEach((a) => (a.onclick = (e) => { e.preventDefault(); save({ tab: a.dataset.tab }); renderUnits(); }));
   document.getElementById("uMode").onchange = (e) => { save({ mode: e.target.value }); renderUnits(); };
   document.getElementById("uMonth")?.addEventListener("change", (e) => { save({ month: e.target.value || thisMonth() }); renderUnits(); });
@@ -214,7 +214,7 @@ async function renderProfit(box, P, openUnit) {
 
 async function renderDetail(vehicleId, P) {
   const box = document.getElementById("uDetail");
-  box.innerHTML = `<p class="muted">Memuat...</p>`;
+  box.innerHTML = `${skelTable(6, 7)}`;
   const all = vehicleId === "all";
   const d = all ? await get(`/units/trips?${P.qs}`) : await get(`/units/${vehicleId}/detail?${P.qs}`);
   const dayClass = (x) => !x.day_cost && x.day_cost !== 0 ? "none" : x.day > d.today ? "future" : x.jobs ? "used" : "idle";

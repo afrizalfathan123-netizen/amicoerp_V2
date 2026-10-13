@@ -2,6 +2,7 @@
 //   npm start                 -> http://localhost:3200 (di laptop: database tertanam data/pg; online: lihat config.js)
 //   npm run user:add -- ...   -> buat user pertama (ADMIN)
 import express from "express";
+import compression from "compression";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { CONFIG, ROOT } from "./config.js";
@@ -20,8 +21,11 @@ export async function createApp(db) {
   const app = express();
   app.disable("x-powered-by");
   app.set("trust proxy", 1);   // di belakang proxy HTTPS (Railway): req.secure benar, cookie diberi Secure
+  // jawaban dikirim terkompresi (gzip): daftar job 3 MB jadi sekitar 160 KB, jauh lebih cepat sampai di browser
+  app.use(compression());
   app.use(express.json({ limit: "2mb" }));
-  app.use(sessionMiddleware(db));
+  // sesi hanya dicek untuk /api: file tampilan (js, css) tidak perlu bertanya ke database
+  app.use("/api", sessionMiddleware(db));
   app.use("/api", authRoutes(db));
   app.use("/api", masterRoutes(db));
   app.use("/api", jobRoutes(db));

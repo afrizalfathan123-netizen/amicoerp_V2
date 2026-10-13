@@ -489,6 +489,59 @@ try {
     assert.ok((await admin.call("GET", "/export/semua.xlsx")).byteLength > 20000);
   });
 
+  await step("pengajuan / invoice baru: tempel daftar no job atau kode tugas", async () => {
+    let rows = [], phase = "";
+    for (phase of ["DP", "SETTLEMENT", "FULL", "OTHER"]) {
+      rows = (await fin.call("GET", `/moves/eligible?move_type=in_invoice&phase=${phase}`)).filter((r) => r.suggested > 0);
+      if (new Set(rows.map((r) => r.job_id)).size >= 2) break;
+    }
+    const jobs = [...new Map(rows.map((r) => [r.job_id, r])).values()];
+    assert.ok(jobs.length >= 2, "butuh minimal 2 job yang masih bisa diajukan");
+    const [a, b] = jobs;
+    const idsOf = (list) => [...new Set(list.map((r) => r.job_id))].sort();
+    // huruf kecil, spasi, baris baru, nomor yang tidak ada: hanya 2 job itu yang keluar
+    const got = await viewer.call("POST", "/moves/eligible", { move_type: "in_invoice", phase,
+      numbers: `${a.job_number.toLowerCase()}\n\n ${b.job_number} , AMC/0000/9999` });
+    assert.deepEqual(idsOf(got), [a.job_id, b.job_id].sort());
+    assert.deepEqual(idsOf(await viewer.call("GET", `/moves/eligible?move_type=in_invoice&phase=${phase}&numbers=${encodeURIComponent(a.job_number)}`)), [a.job_id]);
+    // kode tugas juga cocok
+    const withDo = jobs.find((r) => r.do_number);
+    if (withDo) {
+      const byDo = await viewer.call("POST", "/moves/eligible", { move_type: "in_invoice", phase, numbers: [withDo.do_number.toLowerCase()] });
+      assert.ok(byDo.some((r) => r.job_id === withDo.job_id));
+    }
+    // tanpa daftar tetap seperti biasa (semua), dan POST ini tidak menyimpan apa pun
+    assert.ok((await viewer.call("POST", "/moves/eligible", { move_type: "in_invoice", phase })).length >= rows.length);
+  });
+
+  await step("ringan: jawaban dikompresi, file tampilan tanpa cek sesi, ringkasan status cocok dengan daftar job", async () => {
+    const root = base.replace(/\/api$/, "");
+    const login = await fetch(`${base}/login`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: "viewer", password: "rahasia123" }) });
+    const cookie = login.headers.get("set-cookie").split(";")[0];
+    // jawaban besar dikirim gzip (fetch membukanya lagi otomatis)
+    const list = await fetch(`${base}/jobs?limit=5000`, { headers: { cookie, "accept-encoding": "gzip" } });
+    assert.equal(list.headers.get("content-encoding"), "gzip");
+    const jobs = await list.json();
+    assert.ok(jobs.length > 3);
+    // file tampilan bisa dibuka tanpa login, juga dikompresi
+    const file = await fetch(`${root}/lib.js`, { headers: { "accept-encoding": "gzip" } });
+    assert.equal(file.status, 200);
+    assert.equal(file.headers.get("content-encoding"), "gzip");
+    // ringkasan (satu query, dikelompokkan per tahap) = hitung ulang dari daftar job
+    const sum = await viewer.call("GET", "/sj/summary");
+    const count = (fn) => jobs.filter(fn).length;
+    for (const [stage, n] of Object.entries(sum.stages)) assert.equal(n, count((j) => j.stage === stage), stage);
+    assert.equal(Object.values(sum.stages).reduce((a, b) => a + b, 0), jobs.length);
+    const live = (j) => j.state !== "cancelled";
+    assert.equal(sum.belum_ada_resi, count((j) => live(j) && j.sj_status === "BELUM_ADA_RESI"));
+    assert.equal(sum.di_kurir, count((j) => live(j) && j.sj_status === "DI_KURIR"));
+    assert.equal(sum.diterima_belum_kirim, count((j) => live(j) && j.sj_status === "DITERIMA"));
+    assert.equal(sum.resi_terlambat, count((j) => live(j) && j.sj_late === "RESI_TERLAMBAT"));
+    const lead = jobs.filter((j) => live(j) && j.lead_time_sj !== null).map((j) => Number(j.lead_time_sj));
+    assert.equal(sum.rata_lead_time, lead.length ? Math.round((lead.reduce((a, b) => a + b, 0) / lead.length) * 10) / 10 : null);
+  });
+
   console.log(`\nSemua ${passed} langkah lolos.`);
 } finally {
   server.close();

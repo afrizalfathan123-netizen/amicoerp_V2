@@ -93,8 +93,9 @@ public/
   index.html, styles.css  kerangka + tema (krem #FEF3E2, amber #F4AE52, rust #D4621A, espresso #2A1A0E, olive #6B8E3D)
   app.js                  NAV (menu per grup), ROUTES [regex, modul, fungsi, key menu], router, login, menu user
   lib.js                  helper UI: api/get, esc, rp, tgl, jam, table, tile, openModal, askReason, action, toast,
-                          label (STAGE_LABEL, PHASE_LABEL, phaseLabel, SCHEME_*), cache master (state.cache), icon()
-  xlfilter.js             xlTable(): tabel dengan filter & urut per kolom ala Excel, centang baris
+                          label (STAGE_LABEL, PHASE_LABEL, phaseLabel, SCHEME_*), cache master (state.cache), icon(),
+                          latest(), skeleton()/skelTable()/skelTiles(), pagedTable() + pager
+  xlfilter.js             xlTable(): tabel dengan filter & urut per kolom ala Excel, centang baris, digambar per halaman
   fox.js                  maskot rubah 8-bit di topbar (canvas, bisa dimatikan dari menu user)
   pages/*.js              satu modul per halaman, export renderXxx() dipanggil router
 db/migrations/NNN_*.sql   skema + view, berurutan, maju terus (lihat bagian 6)
@@ -230,6 +231,19 @@ Frontend:
 - Pakai helper `lib.js` (`table`, `tile`, `openModal`, `askReason`, `action`, `toast`, `esc`, `rp`, `tgl`, `jam`,
   `enumOptions`, `options`). **Selalu `esc()`** untuk teks dari data.
 - Tabel daftar yang panjang: `xlTable()` (`public/xlfilter.js`) untuk filter / urut per kolom ala Excel dan centang.
+- **Kinerja & kelancaran (jangan dilonggarkan):**
+  - Jangan menggambar ribuan baris sekaligus. Daftar yang bisa panjang pakai `xlTable()` atau `pagedTable()` (bawaan 100 baris
+    per halaman; filter, total, centang, dan export tetap dari SEMUA baris). `table()` biasa hanya untuk daftar pendek.
+  - Halaman langsung menggambar kerangka (judul, filter) lalu memuat data; wadah yang menunggu data diisi `skelTable()` /
+    `skelTiles()`, bukan teks "Memuat...". Router sendiri menampilkan `skeleton()` saat pindah halaman.
+  - Muat ulang yang dipicu filter / kotak cari dibungkus `latest()` (`const only = latest(); await only(get(url))`) supaya jawaban
+    lama yang datang belakangan tidak menimpa yang baru.
+  - Permintaan baca (GET) milik halaman lama otomatis dibatalkan saat pindah halaman (`newNavigation()` dipanggil router) dan
+    lanjutannya tidak pernah jalan. Karena itu semua baca data harus lewat `api()` / `get()`, jangan `fetch` langsung (kecuali unduh / unggah file).
+    POST yang hanya membaca didaftarkan di `READ_POST` (`lib.js`).
+  - Permintaan yang tidak saling bergantung dijalankan bersamaan (`Promise.all`), di browser maupun di route server.
+  - Baris yang bisa diklik: `tr[data-href]` + `bindRows(wadah)` (satu pendengar per wadah). Jangan memasang `onclick` per baris.
+  - Jangan pakai `backdrop-filter` / `filter` CSS di elemen besar (topbar, latar modal): itu sumber modal dan gulir yang berat.
 - Label fase pakai `phaseLabel(phase, scheme)` ("DP 70%", "Pelunasan 30%"), bukan kode mentah.
 - Warna lewat variabel CSS di `styles.css`; jangan menambah library CSS / JS dari CDN.
 - Tampilan harus tetap layak di layar sempit (pane / HP): tabel di `.table-wrap` (scroll horizontal).
@@ -243,7 +257,7 @@ npm test
 ```
 | File | Isi |
 |---|---|
-| `test/run-all.js` | alur lengkap lewat HTTP per role di PGlite memori (23 langkah, termasuk unit sewa): job, invoice, pengajuan, bayar, transfer malam, 50/50, selisih tanpa tujuan, SJ, reroute, AR/AP, tempel daftar, export |
+| `test/run-all.js` | alur lengkap lewat HTTP per role di PGlite memori (25 langkah, termasuk unit sewa, tempel daftar di form pengajuan, dan kompresi jawaban): job, invoice, pengajuan, bayar, transfer malam, 50/50, selisih tanpa tujuan, SJ, reroute, AR/AP, tempel daftar, export |
 | `test/import.test.js` | impor dari tiruan database v1 (12) |
 | `test/jobreg.test.js` | impor JOB REGISTRATION dari workbook tiruan (15) |
 | `test/joblist-v1.test.js` | impor Job List v1 (5) |

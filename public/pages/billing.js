@@ -1,6 +1,6 @@
 // AR Customer / AP Vendor per job: mana yang belum ditagih (diajukan), sudah ditagih belum dibayar, belum bisa ditagih, lunas.
 // Ditulis untuk orang baru: setiap fase ditulis lengkap (DP 70%, Pelunasan 30%, Full 100%) dengan nominal & langkah berikutnya.
-import { get, view, esc, rp, tgl, tile, toast, openModal, enumOptions, canFinance, state, phaseLabel, SCHEME_LABEL, SCHEME_SHORT, STAGE_LABEL, bindRows } from "../lib.js";
+import { get, view, esc, rp, tgl, tile, toast, openModal, enumOptions, canFinance, state, phaseLabel, SCHEME_LABEL, SCHEME_SHORT, STAGE_LABEL, bindRows, skelTable, skelTiles } from "../lib.js";
 import { xlTable } from "../xlfilter.js";
 import { moveForm } from "./moves.js";
 
@@ -93,7 +93,7 @@ async function renderBilling(side) {
         <li><b>Belum diajukan</b> = belum masuk pengajuan. <b>Diajukan, belum ditransfer</b> = pengajuan ada (menunggu persetujuan / transfer).
           <b>Belum bisa</b> = syaratnya belum lengkap (kode tugas atau gate out).</li></ul>`}
     </details>
-    <div class="tiles" id="bTiles"></div>
+    <div class="tiles" id="bTiles">${skelTiles()}</div>
     <div class="panel">
       <div class="tabs" id="bTabs"></div>
       <div class="filters">
@@ -102,7 +102,7 @@ async function renderBilling(side) {
       </div>
       <div id="bPasteBox"></div>
       <div id="bAction"></div>
-      <div id="bTable"><p class="muted">Memuat...</p></div>
+      <div id="bTable">${skelTable(10, 8)}</div>
     </div>`;
   const el = (id) => document.getElementById(id);
   el("legend").addEventListener("toggle", () => save());

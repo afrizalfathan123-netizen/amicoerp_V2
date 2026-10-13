@@ -84,34 +84,37 @@ export default function reportRoutes(db) {
   const read = requireRole(ROLES.READ);
 
   r.get("/dashboard", read, route(async () => {
-    const [t] = await db.query(
+    // 8 ringkasan dijalankan bersamaan (di PostgreSQL online tiap query punya koneksi sendiri), bukan satu per satu
+    const [[t], [pos], [pend], [titip], [trip], [kurang], [tanpa], monthly] = await Promise.all([
+      db.query(
       `select count(*)::int as jobs,
               coalesce(sum(selling), 0) as selling, coalesce(sum(cost), 0) as cost,
               coalesce(sum(invoiced - received), 0) as piutang, coalesce(sum(requested - paid), 0) as utang,
               (select coalesce(sum(case when payment_type = 'inbound' then amount else -amount end), 0) from account_payment) as kas
-       from v_job_balance b join job j on j.id = b.job_id where j.state <> 'cancelled'`);
-    const [pos] = await db.query(
+       from v_job_balance b join job j on j.id = b.job_id where j.state <> 'cancelled'`),
+      db.query(
       `select coalesce(sum(not_billed) filter (where side = 'SALE'), 0) as perlu_ditagih,
               coalesce(sum(not_billed) filter (where side = 'PURCHASE'), 0) as belum_diajukan
-       from v_job_phase_position`);
-    const [pend] = await db.query(
-      "select count(*)::int as n, coalesce(sum(s.amount_total), 0) as total from account_move m join v_move_status s on s.move_id = m.id where m.state = 'posted' and m.approval_state = 'PENDING'");
-    const [titip] = await db.query("select coalesce(sum(titipan), 0) as titipan from v_titipan_operasional");
-    const [trip] = await db.query(
+       from v_job_phase_position`),
+      db.query(
+      "select count(*)::int as n, coalesce(sum(s.amount_total), 0) as total from account_move m join v_move_status s on s.move_id = m.id where m.state = 'posted' and m.approval_state = 'PENDING'"),
+      db.query("select coalesce(sum(titipan), 0) as titipan from v_titipan_operasional"),
+      db.query(
       `select count(*) filter (where trip_status = 'DALAM PERJALANAN')::int as jalan,
               count(*) filter (where trip_status = 'DALAM PERJALANAN' and lewat_sla)::int as lewat_sla
-       from v_tracker`);
-    const [kurang] = await db.query("select count(distinct job_id)::int as jobs, coalesce(sum(kurang), 0) as total from v_kurang_transfer");
-    const [tanpa] = await db.query(
+       from v_tracker`),
+      db.query("select count(distinct job_id)::int as jobs, coalesce(sum(kurang), 0) as total from v_kurang_transfer"),
+      db.query(
       `select count(*) filter (where status = 'OPEN')::int as n, coalesce(sum(amount) filter (where status = 'OPEN'), 0) as total,
               coalesce(sum(paid) filter (where status = 'PARTNER_BALANCE' and move_type = 'in_invoice'), 0) as saldo_vendor,
               coalesce(sum(paid) filter (where status = 'PARTNER_BALANCE' and move_type = 'out_invoice'), 0) as saldo_customer
-       from v_unassigned`);
-    const monthly = await db.query(
+       from v_unassigned`),
+      db.query(
       `select to_char(tanggal, 'YYYY-MM') as bulan,
               sum(case when arah = 'MASUK' then nominal else 0 end) as masuk,
               sum(case when arah = 'KELUAR' then nominal else 0 end) as keluar
-       from v_cash_ledger group by 1 order by 1 desc limit 12`);
+       from v_cash_ledger group by 1 order by 1 desc limit 12`),
+    ]);
     return { totals: { ...t, ...pos, menunggu_persetujuan: pend.n, menunggu_persetujuan_total: pend.total, titipan: titip.titipan,
       trip_jalan: trip.jalan, trip_lewat_sla: trip.lewat_sla, kurang_transfer_jobs: kurang.jobs, kurang_transfer_total: kurang.total,
       tanpa_tujuan: tanpa.n, tanpa_tujuan_total: tanpa.total, saldo_vendor: tanpa.saldo_vendor, saldo_customer: tanpa.saldo_customer }, monthly };

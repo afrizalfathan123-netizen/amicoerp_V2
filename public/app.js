@@ -1,5 +1,5 @@
 // ERP AMICO v2: router, menu sesuai role, login.
-import { state, api, get, esc, view, toast, loadMaster, openModal, ROLE_LABEL, can, icon } from "./lib.js";
+import { state, api, get, esc, view, toast, loadMaster, openModal, closeModal, ROLE_LABEL, can, icon, newNavigation, skeleton } from "./lib.js";
 import { startFox } from "./fox.js";
 
 const NAV = [
@@ -143,7 +143,16 @@ function renderLogin() {
   };
 }
 
+// Tiap navigasi punya nomor urut. Halaman yang selesai dimuat belakangan padahal pengguna sudah pindah (nomornya sudah lama)
+// tidak boleh menggambar atau menampilkan pesan gagal di atas halaman yang baru.
+let navSeq = 0;
+let lastHash = null;
+const SKELETON = { renderJobDetail: "detail", renderMoveDetail: "detail", renderMovePrint: "detail", renderDeliveryPrint: "detail",
+  renderJobs: "list", renderSj: "list", renderAr: "list", renderAp: "list", renderDashboard: "list", renderKas: "list" };
+
 async function router() {
+  const my = ++navSeq;
+  newNavigation();
   const hash = location.hash || "#/dashboard";
   if (!state.user) {
     try {
@@ -160,16 +169,37 @@ async function router() {
     if (!m) continue;
     document.getElementById("sidebar").hidden = false;
     renderNav(nav);
-    view().innerHTML = `<p class="muted">Memuat...</p>`;
-    try {
-      const page = await import(`./pages/${mod}.js`);
-      await page[fn](...m.slice(1));
-      // label kecil grup menu di atas judul halaman
+    // muat ulang halaman yang sama (setelah simpan / aksi): isi lama tetap tampil sampai yang baru siap, posisi gulir dijaga.
+    // pindah halaman: tampilkan kerangka (skeleton) dulu.
+    const same = hash === lastHash;
+    lastHash = hash;
+    const scrollY = window.scrollY;
+    if (!same) {
+      closeModal();
+      view().innerHTML = skeleton(SKELETON[fn] || "table");
+      window.scrollTo(0, 0);
+    }
+    // label kecil grup menu di atas judul halaman
+    const eyebrow = () => {
       const head = view().querySelector(".page-head");
       const { group } = navInfo(nav);
       if (head && group && !head.querySelector(".eyebrow")) head.insertAdjacentHTML("afterbegin", `<div class="eyebrow">${esc(group)}</div>`);
+    };
+    try {
+      const page = await import(`./pages/${mod}.js`);
+      if (my !== navSeq) return;
+      const done = page[fn](...m.slice(1));
+      eyebrow();          // halaman biasanya langsung menggambar judul, baru memuat data
+      await done;
+      if (my !== navSeq) return;
+      eyebrow();
+      if (same) window.scrollTo(0, scrollY);
     } catch (err) {
-      view().innerHTML = `<div class="panel"><b>Gagal memuat</b><p class="muted">${esc(err.message)}</p></div>`;
+      if (my !== navSeq) return;
+      console.error(err);
+      view().innerHTML = `<div class="panel"><b>Gagal memuat</b><p class="muted">${esc(err.message)}</p>
+        <button type="button" id="retryPage">Coba lagi</button></div>`;
+      document.getElementById("retryPage").onclick = () => { lastHash = null; router(); };
     }
     return;
   }
@@ -177,4 +207,8 @@ async function router() {
 }
 
 window.addEventListener("hashchange", router);
+// kesalahan saat memuat ulang dari filter / tombol (di luar router) tetap terlihat, tidak hilang diam-diam
+window.addEventListener("unhandledrejection", (e) => {
+  if (e.reason?.message) toast(e.reason.message, true);
+});
 router();

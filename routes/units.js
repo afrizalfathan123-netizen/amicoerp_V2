@@ -158,9 +158,8 @@ async function summaryWithMonths(q, pr) {
   s.period = pr;
   s.per_bulan = [];
   if (months.length > 1 || pr.kind !== "month") {
-    for (const m of months) {
-      for (const u of (await unitSummary(q, m)).units) s.per_bulan.push({ bulan: m.month, ...u });
-    }
+    const perMonth = await Promise.all(months.map((m) => unitSummary(q, m)));   // bersamaan, urutan bulan tetap
+    months.forEach((m, i) => { for (const u of perMonth[i].units) s.per_bulan.push({ bulan: m.month, ...u }); });
   }
   return s;
 }

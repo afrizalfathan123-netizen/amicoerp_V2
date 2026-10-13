@@ -1,12 +1,14 @@
 // Tabel dengan filter & urut per kolom ala Excel: klik ▾ di header -> urutkan, cari, centang nilai yang ditampilkan.
 // Dipakai di sisi browser untuk baris yang sudah dimuat. Status filter disimpan per tabel di sessionStorage.
+// Filter, urut, centang, dan export berlaku untuk SEMUA baris; yang digambar ke layar hanya satu halaman (bawaan 100 baris)
+// supaya tabel ribuan baris tetap ringan.
 //
 //   const t = xlTable(box, { id: "jobs", columns, rowHtml, empty, order });
 //   t.setRows(rows);      t.visible();   // baris yang sedang tampil (setelah filter & urut)
 // columns: [{ key, label, num?: true, value: (r) => nilai untuk filter / urut, text?: (r) => label di daftar filter }]
 // order (opsional): fungsi pembanding bawaan kalau belum ada kolom yang diurutkan.
 // rowId (opsional): baris bisa dicentang; rowHtml(r, selCell) menaruh selCell (<td> kotak centang) di awal baris.
-import { esc, rp, table } from "./lib.js";
+import { esc, rp, table, pageSize, pagerHtml, bindPager } from "./lib.js";
 
 const BLANK = "(Kosong)";
 const MAX_LIST = 1000;
@@ -17,6 +19,8 @@ export function xlTable(box, { id, columns, rowHtml, empty = "Tidak ada data", o
   let st = { filters: {}, sort: null };
   try { st = { ...st, ...JSON.parse(sessionStorage.getItem(storeKey) || "{}") }; } catch {}
   let rows = [];
+  let page = 0;
+  let first = true;
   const col = (k) => columns.find((c) => c.key === k);
   const textOf = (c, r) => {
     const v = c.text ? c.text(r) : c.value(r);
@@ -46,17 +50,23 @@ export function xlTable(box, { id, columns, rowHtml, empty = "Tidak ada data", o
 
   function render() {
     const vis = visible();
+    const size = pageSize();
+    page = Math.max(0, Math.min(page, Math.ceil(vis.length / size) - 1));
+    if (st.page !== page) { st.page = page; save(); }
+    const part = vis.slice(page * size, (page + 1) * size);
+    const pager = pagerHtml(vis.length, page, size);
     const active = Object.keys(st.filters).length || st.sort;
     const head = columns.map((c) => {
       const on = st.filters[c.key] || st.sort?.key === c.key;
       const arrow = st.sort?.key === c.key ? (st.sort.dir === "desc" ? "↓" : "↑") : "▾";
       return `<th class="${c.num ? "num" : ""}"><span class="xl-th">${esc(c.label)}<button type="button" class="xl-btn ${on ? "on" : ""}" data-xl="${c.key}" title="Filter / urutkan">${arrow}</button></span></th>`;
     }).join("");
-    const selHead = rowId ? `<th class="xl-sel"><input type="checkbox" data-xl-all title="Centang semua yang tampil" ${vis.length && vis.every((r) => picked.has(rowId(r))) ? "checked" : ""}></th>` : "";
+    const selHead = rowId ? `<th class="xl-sel"><input type="checkbox" data-xl-all title="Centang semua ${rp(vis.length)} baris hasil filter (semua halaman)" ${vis.length && vis.every((r) => picked.has(rowId(r))) ? "checked" : ""}></th>` : "";
     const selCell = (r) => (rowId ? `<td class="xl-sel"><input type="checkbox" data-xl-pick="${esc(rowId(r))}" ${picked.has(rowId(r)) ? "checked" : ""}></td>` : "");
-    box.innerHTML = `<div class="xl-info">${vis.length === rows.length ? `${rp(rows.length)} baris` : `<b>${rp(vis.length)}</b> dari ${rp(rows.length)} baris`}
-        ${active ? `<button type="button" class="small" data-xl-clear>Hapus filter kolom</button>` : ""}</div>
-      ${table(selHead + head, vis.map((r) => rowHtml(r, selCell(r))).join(""), empty)}`;
+    box.innerHTML = `<div class="xl-info"><span>${vis.length === rows.length ? `${rp(rows.length)} baris` : `<b>${rp(vis.length)}</b> dari ${rp(rows.length)} baris`}</span>
+        ${active ? `<button type="button" class="small" data-xl-clear>Hapus filter kolom</button>` : ""}${pager || `<span class="spacer"></span>`}</div>
+      ${table(selHead + head, part.map((r) => rowHtml(r, selCell(r))).join(""), empty)}${pager}`;
+    bindPager(box, (p) => { page = p; render(); });
     box.querySelectorAll("[data-xl-pick]").forEach((c) => (c.onchange = () => {
       const r = rows.find((x) => String(rowId(x)) === c.dataset.xlPick);
       c.checked ? picked.add(rowId(r)) : picked.delete(rowId(r));
@@ -68,7 +78,7 @@ export function xlTable(box, { id, columns, rowHtml, empty = "Tidak ada data", o
       onSelect?.(selected());
     });
     box.querySelectorAll("[data-xl]").forEach((b) => (b.onclick = (e) => { e.stopPropagation(); openPop(b, col(b.dataset.xl)); }));
-    box.querySelector("[data-xl-clear]")?.addEventListener("click", () => { st = { filters: {}, sort: null }; save(); render(); });
+    box.querySelector("[data-xl-clear]")?.addEventListener("click", () => { st = { filters: {}, sort: null }; page = 0; save(); render(); });
     onChange?.(vis);
   }
 
@@ -112,13 +122,13 @@ export function xlTable(box, { id, columns, rowHtml, empty = "Tidak ada data", o
     // mengetik di cari = seperti Excel: yang dicentang hanya hasil cari
     q.oninput = () => { chosen.clear(); if (q.value.trim()) shown().forEach((v) => chosen.add(v)); else values.forEach((v) => chosen.add(v)); draw(); };
     all.onchange = () => { shown().forEach((v) => (all.checked ? chosen.add(v) : chosen.delete(v))); draw(); };
-    pop.querySelectorAll("[data-sort]").forEach((b) => (b.onclick = () => { st.sort = { key: c.key, dir: b.dataset.sort }; save(); closePop(); render(); }));
-    pop.querySelector("[data-clear]").onclick = () => { delete st.filters[c.key]; if (st.sort?.key === c.key) st.sort = null; save(); closePop(); render(); };
+    pop.querySelectorAll("[data-sort]").forEach((b) => (b.onclick = () => { st.sort = { key: c.key, dir: b.dataset.sort }; page = 0; save(); closePop(); render(); }));
+    pop.querySelector("[data-clear]").onclick = () => { delete st.filters[c.key]; if (st.sort?.key === c.key) st.sort = null; page = 0; save(); closePop(); render(); };
     pop.querySelector("[data-cancel]").onclick = closePop;
     pop.querySelector("[data-ok]").onclick = () => {
       if (values.every((v) => chosen.has(v))) delete st.filters[c.key];
       else st.filters[c.key] = [...chosen];
-      save(); closePop(); render();
+      page = 0; save(); closePop(); render();
     };
     q.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); pop.querySelector("[data-ok]").click(); } };
     draw();
@@ -138,7 +148,8 @@ export function xlTable(box, { id, columns, rowHtml, empty = "Tidak ada data", o
   // yang dicentang (hanya baris yang masih ada di data)
   const selected = () => rows.filter((r) => picked.has(rowId(r)));
   return {
-    setRows(r) { rows = r; render(); onSelect?.(selected()); },
+    // pertama kali: kembali ke halaman terakhir yang dibuka (mis. balik dari detail job); data berganti karena filter -> halaman 1
+    setRows(r) { rows = r; page = first ? Number(st.page) || 0 : 0; first = false; render(); onSelect?.(selected()); },
     selected,
     clearSelection() { picked.clear(); render(); onSelect?.([]); },
     visible,

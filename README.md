@@ -74,6 +74,11 @@ importer), dan KURANG TRANSFER. Aturan ada di kepala `lib/import-jobreg.js`. Yan
 - Menu Surat Jalan: pemantauan lead time (gate in -> resi driver -> SJ diterima -> dikirim ke customer) dengan target hari,
   input cepat (tempel daftar no job / no SJ / kode tugas), dan Pengiriman SJ ke customer (satu resi untuk banyak SJ, nomor SJD,
   bisa dicetak). Customer tanpa SJ fisik lewat kurir: matikan "Lacak SJ" di partner.
+- Ringan untuk data banyak: tabel panjang ditampilkan per halaman (100 baris, bisa diubah 50 / 100 / 250 / 500) tetapi filter,
+  total, centang, dan export tetap menghitung semua baris; saat memuat tampil kerangka abu-abu (skeleton) dan garis proses di
+  atas layar; jawaban server dikompresi.
+- Form Pengajuan / Invoice baru: **Tempel daftar job** (atau tempel beberapa nomor langsung di kotak cari). Job di daftar itu saja
+  yang tampil, urut sesuai tempelan dan langsung dicentang; nomor yang sudah diajukan penuh / tidak ketemu disebutkan.
 - Daftar job: filter & urut per kolom seperti Excel (klik ▾ di header), dan **Tempel daftar** no job atau kode tugas
   (dari Excel / WhatsApp) untuk menampilkan job itu saja sesuai urutan tempelan, plus daftar yang tidak ketemu.
 - Export Job List (Excel + ringkasan) di halaman Job; kalau ada filter kolom / daftar tempel, yang diexport persis yang tampil. Teks WhatsApp pengajuan: tombol "Salin teks WhatsApp" di pengajuan vendor.

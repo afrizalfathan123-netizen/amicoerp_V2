@@ -1,7 +1,7 @@
 // Invoice customer & pengajuan vendor: daftar, buat, detail (posting, persetujuan, transfer malam, bayar, batal), cetak.
 import {
   state, api, get, view, esc, rp, tgl, jam, kv, badge, options, enumOptions, table, toast, openModal, askReason, action,
-  customers, vendors, bankLabel, num, today, debounce, bindRows, canFinance, isAdmin, PHASE_LABEL, KIND_LABEL, phaseLabel,
+  customers, vendors, bankLabel, num, today, debounce, bindRows, canFinance, isAdmin, PHASE_LABEL, KIND_LABEL, phaseLabel, latest, skelTable, pagedTable,
 } from "../lib.js";
 // "DP 70%" kalau semua job di dokumen berskema sama, selain itu "DP"
 const movePhase = (m) => phaseLabel(m.phase, m.schemes && !m.schemes.includes(",") ? m.schemes : null);
@@ -32,26 +32,26 @@ async function renderMoves(type) {
         <label>Dari<input type="date" id="mFrom" value="${esc(f.from || "")}"></label>
         <label>Sampai<input type="date" id="mTo" value="${esc(f.to || "")}"></label>
       </div>
-      <div id="mBox"></div>
+      <div id="mBox">${skelTable(10, 8)}</div>
     </div>`;
   const el = (id) => document.getElementById(id);
+  const only = latest();
   const load = async () => {
     const flt = { move_type: type, search: el("mSearch").value, state: el("mState").value, approval: el("mApproval")?.value || "",
       channel: el("mChannel")?.value || "", from: el("mFrom").value, to: el("mTo").value };
     sessionStorage.setItem(key, JSON.stringify(flt));
-    const rows = await get(`/moves?${new URLSearchParams(flt)}`);
-    el("mBox").innerHTML = table(
-      `<th>Nomor</th><th>Tgl</th><th>${isInv ? "Customer" : "Penerima"}</th><th>Fase</th><th class="num">Job</th>
+    const rows = await only(get(`/moves?${new URLSearchParams(flt)}`));
+    pagedTable(el("mBox"), { rows, empty: "Belum ada",
+      head: `<th>Nomor</th><th>Tgl</th><th>${isInv ? "Customer" : "Penerima"}</th><th>Fase</th><th class="num">Job</th>
        <th class="num">Total</th><th class="num">Dibayar</th><th class="num">Sisa</th>${isInv ? "" : `<th class="num">Titipan ops</th>`}<th>Status</th>`,
-      rows.map((m) => `<tr class="click" data-href="#/moves/${m.id}">
+      row: (m) => `<tr class="click" data-href="#/moves/${m.id}">
         <td><b>${esc(m.number || "(draft)")}</b>${m.legacy_number && m.legacy_number !== m.number ? `<br><span class="muted">${esc(m.legacy_number)}</span>` : ""}</td>
         <td>${tgl(m.move_date)}</td><td>${esc(isInv ? m.partner : m.payees || "")}</td>
         <td>${esc(movePhase(m))}${m.payment_channel === "TRANSFER_MALAM" ? `<br><span class="muted">transfer malam</span>` : ""}</td>
         <td class="num">${m.total_jobs}</td><td class="num">${rp(m.amount_total)}</td><td class="num">${rp(m.amount_paid)}</td>
         <td class="num">${rp(m.state === "cancelled" ? 0 : m.amount_residual)}</td>
         ${isInv ? "" : `<td class="num">${m.titipan ? rp(m.titipan) : ""}</td>`}
-        <td>${statusBadge(m)}</td></tr>`).join(""), "Belum ada");
-    bindRows(el("mBox"));
+        <td>${statusBadge(m)}</td></tr>` });
   };
   el("mSearch").oninput = debounce(load);
   for (const k of ["mState", "mApproval", "mChannel", "mFrom", "mTo"]) el(k)?.addEventListener("change", load);
@@ -78,22 +78,79 @@ export function moveForm(type, preset = {}) {
         ${isInv ? `<label>Jatuh tempo<input type="date" name="due_date"></label>
           <label>Rekening tujuan<select name="bank_account_id">${options(banks("BANK"), defBank, bankLabel, null)}</select></label>`
                 : `<label>Saluran<select name="payment_channel">${enumOptions({ NORMAL: "Normal (transfer dari rekening bank)", TRANSFER_MALAM: "Transfer malam (lewat kas operasional)" }, "NORMAL")}</select></label>`}
-        <label>Cari job / plat<input name="search"></label>
+        <label>Cari job / plat<input name="search" placeholder="atau tempel daftar no job di sini"></label>
+        <div style="align-self:end"><button type="button" id="mvPasteBtn" title="Tempel banyak no job / kode tugas sekaligus dari Excel atau WhatsApp">Tempel daftar job</button></div>
         ${isInv ? `<label class="check"><input type="checkbox" name="sj_received" ${preset.job_ids ? "" : "checked"}> Hanya job yang SJ-nya sudah diterima</label>` : ""}
         ${preset.job_ids ? `<label class="check wide"><input type="checkbox" name="only_preset" checked> Hanya ${preset.job_ids.length} job yang dicentang di ${isInv ? "AR Customer" : "AP Vendor"}</label>` : ""}
         <label class="wide">Catatan<input name="note"></label>
       </div>
+      <div id="mvPaste" style="margin-top:12px"></div>
       <div class="table-wrap" id="eligible" style="margin-top:12px"><p class="empty">${isInv ? "Pilih customer dulu." : "Memuat..."}</p></div>`,
     onOpen: (form) => {
       const E = form.elements;
+      const only = latest();
+      // daftar tempel (no job / kode tugas): tampilkan job itu saja, urut sesuai tempelan, langsung dicentang
+      let pasted = null;
+      const norm = (v) => String(v || "").replace(/\s/g, "").toUpperCase();
+      const parseList = (v) => [...new Set(String(v || "").split(/[\s,;]+/).map(norm).filter(Boolean))];
+      const pasteBox = form.querySelector("#mvPaste");
+      const act = isInv ? "ditagih" : "diajukan";
+      const drawPaste = (rows) => {
+        E.search.disabled = !!pasted;
+        if (!pasted) { pasteBox.innerHTML = ""; return; }
+        const hit = new Map();   // nomor -> ada baris yang masih bisa diajukan?
+        for (const r of rows || []) for (const k of [norm(r.job_number), norm(r.do_number)]) {
+          if (pasted.includes(k)) hit.set(k, hit.get(k) || r.suggested > 0);
+        }
+        const done = pasted.filter((n) => hit.get(n) === false);
+        const missing = pasted.filter((n) => !hit.has(n));
+        const short = (list) => `${esc(list.slice(0, 10).join(", "))}${list.length > 10 ? ", ..." : ""}`;
+        pasteBox.innerHTML = `<div class="note-box warn-box paste-box" style="margin:0"><span>Daftar tempel: <b>${rp(pasted.length)} nomor</b>${rows ? `,
+          ${rp(pasted.length - done.length - missing.length)} bisa ${act}${done.length ? `, <b>${rp(done.length)} sudah ${act} penuh</b> (${short(done)})` : ""}${
+          missing.length ? `, <b>${rp(missing.length)} tidak ketemu di fase / filter ini</b> (${short(missing)})` : ""}.` : isInv ? ". Pilih customer dulu." : "."}</span>
+          <span class="spacer"></span><button type="button" class="small" data-edit>Ubah daftar</button><button type="button" class="small" data-clear>Hapus daftar</button></div>`;
+        pasteBox.querySelector("[data-edit]").onclick = editPaste;
+        pasteBox.querySelector("[data-clear]").onclick = () => setPaste(null);
+      };
+      function editPaste() {
+        pasteBox.innerHTML = `<div class="note-box" style="margin:0"><label>Tempel daftar no job / kode tugas (satu per baris, atau dipisah koma / spasi)
+          <textarea id="mvPasteText" rows="6" style="width:100%" placeholder="AMC/2610/0278&#10;AMC/2610/0277&#10;...">${esc((pasted || []).join("\n"))}</textarea></label>
+          <div class="actions" style="margin-top:8px"><button type="button" class="small primary" data-ok>Tampilkan</button><button type="button" class="small" data-cancel>Batal</button></div></div>`;
+        const ta = pasteBox.querySelector("#mvPasteText");
+        ta.focus();
+        pasteBox.querySelector("[data-ok]").onclick = () => setPaste(parseList(ta.value));
+        pasteBox.querySelector("[data-cancel]").onclick = () => drawPaste(form._rows);
+      }
+      const setPaste = (list) => {
+        pasted = list?.length ? list : null;
+        if (pasted) E.search.value = "";
+        drawPaste(null);
+        load();
+      };
+      form.querySelector("#mvPasteBtn").onclick = editPaste;
+      // menempel beberapa nomor langsung di kotak cari = daftar tempel
+      E.search.addEventListener("paste", (e) => {
+        const text = e.clipboardData?.getData("text") || "";
+        const list = parseList(text);
+        if (list.length > 1 && (/[\r\n,;]/.test(text.trim()) || list.every((x) => x.includes("/")))) { e.preventDefault(); setPaste(list); }
+      });
       const load = async () => {
         const box = form.querySelector("#eligible");
         if (isInv && !E.partner_id.value) return;
-        const rows = await get(`/moves/eligible?${new URLSearchParams({ move_type: type, phase: E.phase.value, partner_id: E.partner_id.value, search: E.search.value,
-          sj_received: isInv && E.sj_received.checked && E.phase.value !== "DP" ? "1" : "",
-          ...(preset.job_ids && E.only_preset?.checked ? { job_ids: preset.job_ids.join(",") } : {}) })}`);
+        const q = { move_type: type, phase: E.phase.value, partner_id: E.partner_id.value, search: pasted ? "" : E.search.value,
+          sj_received: isInv && E.sj_received.checked && E.phase.value !== "DP" ? "1" : "" };
+        const ids = preset.job_ids && E.only_preset?.checked ? preset.job_ids : null;
+        const rows = await only(pasted
+          ? api("POST", "/moves/eligible", { ...q, numbers: pasted, job_ids: ids })
+          : get(`/moves/eligible?${new URLSearchParams({ ...q, ...(ids ? { job_ids: ids.join(",") } : {}) })}`));
+        form._rows = rows;
+        drawPaste(rows);
         // hanya yang masih bisa ditagih / diajukan di fase ini (mis. DP yang sudah diajukan tidak muncul lagi)
         const items = rows.filter((r) => r.suggested > 0);
+        if (pasted) {
+          const pos = (r) => Math.min(...[norm(r.job_number), norm(r.do_number)].map((k) => pasted.indexOf(k)).filter((i) => i >= 0), 1e9);
+          items.sort((a, b) => pos(a) - pos(b));
+        }
         box.innerHTML = items.length ? `<table>
           <thead><tr><th><input type="checkbox" id="checkAll"></th><th>Job</th><th>Tgl</th><th>Rute / plat</th>
             ${isInv ? `<th class="num">Selling</th><th class="num">Setelah pajak</th>` : `<th>Jenis</th><th>Penerima / rekening</th><th class="num">Nominal baris</th>`}
@@ -113,12 +170,13 @@ export function moveForm(type, preset = {}) {
         const total = () => {
           let s = 0;
           box.querySelectorAll("[data-i]:checked").forEach((c) => (s += Number(num(box.querySelector(`[data-amount="${c.dataset.i}"]`).value) || 0)));
-          box.querySelector("#selTotal").textContent = rp(s);
+          const out = box.querySelector("#selTotal");   // tidak ada kalau daftarnya kosong
+          if (out) out.textContent = rp(s);
         };
         box.querySelectorAll("[data-i], [data-amount]").forEach((x) => (x.oninput = total));
         const all = box.querySelector("#checkAll");
         if (all) all.onchange = () => { box.querySelectorAll("[data-i]").forEach((c) => (c.checked = all.checked)); total(); };
-        if (preset.job_ids && E.only_preset?.checked) { box.querySelectorAll("[data-i]").forEach((c) => (c.checked = true)); if (all) all.checked = true; total(); }
+        if (pasted || (preset.job_ids && E.only_preset?.checked)) { box.querySelectorAll("[data-i]").forEach((c) => (c.checked = true)); if (all) all.checked = true; total(); }
       };
       E.partner_id.onchange = load;
       E.phase.onchange = load;
