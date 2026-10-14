@@ -480,6 +480,31 @@ try {
     }
   });
 
+  await step("unit sewa per periode kontrak: siklus ikut tanggal mulai kontrak, sewa per siklus, untung dibanding periode sebelumnya", async () => {
+    // B 5555 PR: 1 Agu - 30 Sep, 9.000.000 / bulan -> periode 1 = 1-31 Agu, periode 2 = 1-30 Sep
+    await fin.call("POST", "/units/contracts", { plate_number: "B 5555 PR", truck_type: "CDDL", date_start: "2026-08-01", date_end: "2026-09-30", monthly_rent: 9000000 });
+    // kontrak "6 Agu - 6 Sep" = satu periode (ekor 1 hari digabung), sewa tetap sebulan penuh
+    await fin.call("POST", "/units/contracts", { plate_number: "B 5556 PR", truck_type: "CDDL", date_start: "2026-08-06", date_end: "2026-09-06", monthly_rent: 9000000 });
+    // kontrak berhenti di tengah: 1-15 Agu = periode terpotong, sewa sebanding hari (15/31)
+    await fin.call("POST", "/units/contracts", { plate_number: "B 5557 PR", truck_type: "CDDL", date_start: "2026-08-01", date_end: "2026-08-15", monthly_rent: 9000000 });
+    // satu trip di September: selling 3.000.000 - uang jalan 1.000.000 = kontribusi 2.000.000
+    const T = await ops.call("POST", "/jobs", { job_date: "2026-09-10", customer_id: id.KOTA, pol_id: id.JRT, pod_id: id.SBY, trip_type: "ONE_WAY", truck_type: "CDDL",
+      plate_number: "B 5555 PR", selling_mode: "CUSTOM", selling: 3000000, cost: 1000000 });
+    await ops.call("PUT", `/jobs/${T.id}/trip`, { gate_out_at: "2026-09-10T08:00:00+07:00", gate_in_at: "2026-09-11T18:00:00+07:00" });
+    const { periods } = await viewer.call("GET", "/units/periods");
+    const of = (plate) => periods.filter((x) => x.plate_number === plate).map((x) =>
+      [x.ke, x.from, x.to, x.status, x.sewa_periode, x.trips, x.kontribusi, x.untung, x.selisih_sebelumnya]);
+    assert.deepEqual(of("B 5555 PR"), [
+      [1, "2026-08-01", "2026-08-31", "SELESAI", 9000000, 0, 0, -9000000, null],
+      [2, "2026-09-01", "2026-09-30", "SELESAI", 9000000, 1, 2000000, -7000000, 2000000],
+    ]);
+    assert.deepEqual(of("B 5556 PR").map((x) => x.slice(0, 5)), [[1, "2026-08-06", "2026-09-06", "SELESAI", 9000000]]);
+    assert.deepEqual(of("B 5557 PR").map((x) => x.slice(0, 5)), [[1, "2026-08-01", "2026-08-15", "SELESAI", Math.round(9000000 * 15 / 31)]]);
+    // utilisasi periode 2: trip 10-11 Sep = 2 dari 30 hari dipakai
+    const p2 = periods.find((x) => x.plate_number === "B 5555 PR" && x.ke === 2);
+    assert.deepEqual([p2.hari_jalan, p2.hari_menganggur, p2.utilisasi, p2.biaya_menganggur], [2, 28, 7, 8400000]);
+  });
+
   await step("kelola user (ADMIN saja) + audit", async () => {
     assert.match(await fin.call("GET", "/users", null, 403), /akses/);
     await admin.call("POST", "/users", { username: "budi.ops", display_name: "Budi", role: "OPERATIONAL", password: "panjang123" });

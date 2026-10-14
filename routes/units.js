@@ -151,6 +151,76 @@ export async function unitSummary(q, period) {
   return { ...r, today: today(), units: rows };
 }
 
+// ---------------------------------------------------------------- periode kontrak (siklus sewa)
+// Satu siklus = satu bulan sewa mengikuti tanggal mulai kontrak (mulai 21 Sep -> 21 Sep-20 Okt, 21 Okt-20 Nov, ...).
+// Sisa ekor <= 2 hari di akhir kontrak digabung ke siklus terakhir (mis. kontrak 6 Okt - 6 Nov = satu siklus).
+const isoDay = (d) => d.toISOString().slice(0, 10);
+const addDays = (s, n) => isoDay(new Date(Date.parse(`${s}T00:00:00Z`) + n * 86400000));
+const dayDiff = (a, b) => Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 86400000);
+function addMonthsClamp(s, n) {
+  const [y, m, d] = s.split("-").map(Number);
+  const t = new Date(Date.UTC(y, m - 1 + n, 1));
+  const last = new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth() + 1, 0)).getUTCDate();
+  return isoDay(new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth(), Math.min(d, last))));
+}
+export function contractCycles(start, end, now) {
+  const stop = end || now;                     // kontrak tanpa tanggal selesai: sampai siklus yang memuat hari ini
+  const out = [];
+  for (let k = 0; k < 600; k++) {
+    const from = addMonthsClamp(start, k);
+    if (from > stop) break;
+    const full = addDays(addMonthsClamp(start, k + 1), -1);
+    let to = end && full > end ? end : full;
+    if (end && to < end && dayDiff(to, end) <= 2) to = end;   // ekor pendek ikut siklus ini
+    // potong = siklus berhenti sebelum genap sebulan karena kontrak selesai (sewanya sebanding hari)
+    out.push({ ke: k + 1, from, to, hari: dayDiff(from, to) + 1, hari_penuh: dayDiff(from, full) + 1, potong: to < full });
+    if (to === end) break;
+  }
+  return out;
+}
+
+export async function contractPeriods(q) {
+  const now = today();
+  const contracts = await q.query(
+    `select c.*, v.plate_number, v.truck_type, p.name as pemilik from vehicle_contract c join vehicle v on v.id = c.vehicle_id
+     left join res_partner p on p.id = c.partner_id where c.date_start <= $1 order by v.plate_number, c.date_start`, [now]);
+  const rows = [];
+  // ringkasan unit untuk satu rentang tanggal dipakai bersama oleh kontrak lain yang siklusnya sama
+  const cache = new Map();
+  const summaryOf = (from, to) => {
+    if (!cache.has(`${from}|${to}`)) cache.set(`${from}|${to}`, unitSummary(q, { from, to }));
+    return cache.get(`${from}|${to}`);
+  };
+  for (const c of contracts) {
+    const sewa = Number(c.monthly_rent) + Number(c.other_monthly_cost || 0);
+    let prev = null;
+    for (const cy of contractCycles(String(c.date_start).slice(0, 10), c.date_end ? String(c.date_end).slice(0, 10) : null, now)) {
+      const u = (await summaryOf(cy.from, cy.to)).units.find((x) => x.vehicle_id === c.vehicle_id) || {};
+      const status = cy.to < now ? "SELESAI" : "BERJALAN";
+      // sewa satu siklus = sewa bulanan penuh (termasuk ekor 1-2 hari yang digabung); siklus terpotong = sebanding jumlah harinya
+      const sewaPeriode = cy.potong ? Math.round((sewa * cy.hari) / cy.hari_penuh) : Math.round(sewa);
+      const berjalan = status === "BERJALAN" ? Math.min(cy.hari, dayDiff(cy.from, now) + 1) : cy.hari;
+      const sewaSdHariIni = Math.round((sewaPeriode * berjalan) / cy.hari);
+      const perHari = sewaPeriode / cy.hari;
+      const row = {
+        contract_id: c.id, vehicle_id: c.vehicle_id, plate_number: c.plate_number, truck_type: c.truck_type, pemilik: c.pemilik,
+        ke: cy.ke, from: cy.from, to: cy.to, hari: cy.hari, hari_berjalan: berjalan, status,
+        sewa_periode: sewaPeriode, sewa_sd_hari_ini: sewaSdHariIni, biaya_per_hari: Math.round(perHari),
+        trips: u.trips || 0, masih_jalan: u.masih_jalan || 0, selling: u.selling || 0, uang_jalan: u.uang_jalan || 0, kontribusi: u.kontribusi || 0,
+        hari_jalan: u.hari_jalan || 0, hari_menganggur: u.hari_menganggur || 0, utilisasi: u.utilisasi || 0,
+      };
+      row.untung = money(row.kontribusi - sewaSdHariIni);
+      row.biaya_menganggur = Math.round(row.hari_menganggur * perHari);
+      // dibanding siklus sebelumnya dari kontrak yang sama (siklus berjalan dibanding secara sampai hari ini)
+      row.untung_sebelumnya = prev ? prev.untung : null;
+      row.selisih_sebelumnya = prev ? money(row.untung - prev.untung) : null;
+      rows.push(row);
+      prev = row;
+    }
+  }
+  return { today: now, periods: rows };
+}
+
 // ringkasan periode + rincian per bulan (kalau periode lebih dari satu bulan)
 async function summaryWithMonths(q, pr) {
   const s = await unitSummary(q, pr);
@@ -169,6 +239,8 @@ export default function unitRoutes(db) {
   const read = requireRole(ROLES.READ);
 
   r.get("/units/summary", read, route(async (req) => summaryWithMonths(db, await periodOf(db, req.query))));
+  // untung rugi per siklus kontrak sewa (bandingkan periode 1, 2, ... tiap unit)
+  r.get("/units/periods", read, route(() => contractPeriods(db)));
   // semua trip unit sewa dalam periode (untuk analisa lintas unit)
   r.get("/units/trips", read, route(async (req) => {
     const pr = await periodOf(db, req.query);

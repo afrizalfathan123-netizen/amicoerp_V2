@@ -101,6 +101,10 @@ lain); trip diambil otomatis dari job dengan plat yang sama (spasi / huruf besar
   titik impas (trip per bulan), plus kalender hari.
 - Periode: per bulan, rentang tanggal bebas, atau keseluruhan (sejak kontrak pertama s/d hari ini); untuk rentang / keseluruhan
   ada tabel tren per bulan (semua unit) dan per unit per bulan.
+- Tab **Per periode kontrak**: untung / rugi tiap unit per siklus sewa mengikuti tanggal mulai kontrak (mulai 21 Sep:
+  periode 1 = 21 Sep - 20 Okt, periode 2 = 21 Okt - 20 Nov, ...), sewa penuh per periode (yang terpotong tanggal selesai
+  kontrak sebanding hari; ekor 1-2 hari digabung, jadi "6 Okt - 6 Nov" = satu periode), dan naik / turunnya untung dibanding
+  periode sebelumnya. Klik baris untuk melihat trip di periode itu.
 - Tabel per unit dan tabel trip (per unit atau "Semua trip bulan ini") bisa difilter / diurut per kolom seperti Excel; ringkasan
   dan total mengikuti yang tampil. Export Excel (sheet RINGKASAN UNIT, TRIP, HARIAN) juga persis yang tampil.
 - Kontrak bisa diubah (termasuk plat & jenis truk unit) dan dihapus selama belum punya tagihan sewa.

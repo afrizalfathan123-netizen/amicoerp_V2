@@ -3,7 +3,7 @@ import { get, api, view, esc, rp, tgl, jam, table, tile, toast, openModal, askRe
   canFinance, bindRows, skelTable } from "../lib.js";
 import { xlTable } from "../xlfilter.js";
 
-const TABS = { profit: "Untung rugi", contracts: "Kontrak sewa", bills: "Tagihan sewa" };
+const TABS = { profit: "Untung rugi", periods: "Per periode kontrak", contracts: "Kontrak sewa", bills: "Tagihan sewa" };
 const thisMonth = () => new Date().toLocaleDateString("sv-SE", { timeZone: "Asia/Jakarta" }).slice(0, 7);
 const monthName = (m) => new Date(`${m}-01T00:00:00`).toLocaleDateString("id-ID", { month: "long", year: "numeric" });
 const banks = () => state.cache.banks.filter((b) => b.active);
@@ -33,7 +33,7 @@ export async function renderUnits() {
     <div class="page-head"><h1>Unit Sewa</h1>
       <span class="sub">Unit yang disewa bulanan: biaya per hari, untung per trip, dan untung per unit. Trip diambil otomatis dari job dengan plat yang sama.</span>
       <div class="spacer"></div>
-      <div class="period-pick">
+      <div class="period-pick" ${tab === "periods" || tab === "contracts" ? "hidden" : ""}>
         <label>Periode<select id="uMode">${[["month", "Per bulan"], ["range", "Rentang tanggal"], ["all", "Keseluruhan"]]
           .map(([v, l]) => `<option value="${v}" ${P.mode === v ? "selected" : ""}>${l}</option>`).join("")}</select></label>
         ${P.mode === "month" ? `<label>Bulan<input type="month" id="uMonth" value="${esc(P.month)}"></label>` : ""}
@@ -53,8 +53,77 @@ export async function renderUnits() {
   document.getElementById("uTo")?.addEventListener("change", range);
   const box = document.getElementById("uBox");
   if (tab === "contracts") return renderContracts(box);
+  if (tab === "periods") return renderPeriods(box);
   if (tab === "bills") return renderBills(box, P);
   return renderProfit(box, P, saved.unit);
+}
+
+// ---------------------------------------------------------------- per periode kontrak
+const PERIOD_COLS = [
+  { key: "plate_number", label: "Unit", value: (x) => x.plate_number },
+  { key: "ke", label: "Periode", num: true, value: (x) => x.ke, text: (x) => `Periode ${x.ke}` },
+  { key: "from", label: "Tanggal", value: (x) => x.from, text: (x) => `${tglId(x.from)} – ${tglId(x.to)}` },
+  { key: "status", label: "Status", value: (x) => (x.status === "SELESAI" ? "Selesai" : "Berjalan") },
+  { key: "pemilik", label: "Pemilik", value: (x) => x.pemilik },
+  { key: "sewa_periode", label: "Sewa periode", num: true, value: (x) => x.sewa_periode },
+  { key: "trips", label: "Trip", num: true, value: (x) => x.trips, text: (x) => String(x.trips) },
+  { key: "selling", label: "Selling", num: true, value: (x) => x.selling },
+  { key: "uang_jalan", label: "Uang jalan", num: true, value: (x) => x.uang_jalan },
+  { key: "kontribusi", label: "Kontribusi", num: true, value: (x) => x.kontribusi },
+  { key: "untung", label: "Untung / rugi", num: true, value: (x) => x.untung },
+  { key: "selisih", label: "vs periode sebelumnya", num: true, value: (x) => x.selisih_sebelumnya },
+  { key: "utilisasi", label: "Utilisasi", num: true, value: (x) => x.utilisasi, text: (x) => `${x.utilisasi}%` },
+  { key: "biaya_menganggur", label: "Biaya menganggur", num: true, value: (x) => x.biaya_menganggur },
+];
+
+async function renderPeriods(box) {
+  const s = await get("/units/periods");
+  box.innerHTML = `
+    <div class="note-box" style="margin:0 0 14px">Satu <b>periode</b> = satu bulan sewa mengikuti tanggal mulai kontrak (mulai 21 Sep: periode 1 = 21 Sep – 20 Okt,
+      periode 2 = 21 Okt – 20 Nov, ...), bukan bulan kalender. <b>Sewa periode</b> = sewa bulanan penuh (periode yang terpotong tanggal selesai kontrak dihitung sebanding harinya).
+      <b>Untung / rugi</b> = kontribusi trip yang berangkat di periode itu - sewa periode${s.periods.some((x) => x.status === "BERJALAN") ? "; periode yang masih berjalan dihitung sampai hari ini" : ""}.
+      <b>vs periode sebelumnya</b> = naik / turunnya untung dibanding periode sebelumnya unit yang sama.</div>
+    <div class="tiles" id="pTiles"></div>
+    <div class="panel"><h2>Per unit per periode <span class="hint">klik baris untuk melihat trip di periode itu</span></h2><div id="pTable"></div></div>
+    <div id="pDetail"></div>`;
+  const tiles = (rows) => {
+    const done = rows.filter((x) => x.status === "SELESAI"), run = rows.filter((x) => x.status === "BERJALAN");
+    const rugi = done.filter((x) => x.untung < 0);
+    document.getElementById("pTiles").innerHTML =
+      tile("Untung periode selesai", sumOf(done, "untung"), sumOf(done, "untung") >= 0 ? "plus" : "minus", `${done.length} periode selesai`) +
+      tile("Periode berjalan (s/d hari ini)", sumOf(run, "untung"), sumOf(run, "untung") >= 0 ? "plus" : "minus", `${run.length} periode, sewa s/d hari ini ${rp(sumOf(run, "sewa_sd_hari_ini"))}`) +
+      tile("Periode rugi", rugi.length, rugi.length ? "warn" : "", rugi.length ? `total rugi ${rp(Math.abs(sumOf(rugi, "untung")))}` : "dari periode yang sudah selesai") +
+      tile("Kontribusi trip", sumOf(rows, "kontribusi"), "in", `${sumOf(rows, "trips")} trip, selling ${rp(sumOf(rows, "selling"))}`);
+  };
+  const delta = (v) => (v == null ? `<span class="muted">-</span>`
+    : `<span class="sign ${v >= 0 ? "plus" : "minus"}">${v >= 0 ? "+" : "&minus;"}${rp(Math.abs(v))}</span>`);
+  const grid = xlTable(document.getElementById("pTable"), {
+    id: "unit-periods", columns: PERIOD_COLS, empty: "Belum ada kontrak sewa. Tambahkan di tab Kontrak sewa.",
+    order: (a, b) => a.plate_number.localeCompare(b.plate_number) || a.ke - b.ke,
+    rowHtml: (x) => `<tr class="click" data-period="${x.contract_id}:${x.ke}">
+      <td><b>${esc(x.plate_number)}</b><br><span class="muted">${esc(x.truck_type)}</span></td><td class="num">${x.ke}</td>
+      <td class="nowrap">${tglId(x.from)} –<br>${tglId(x.to)} <span class="muted">(${x.hari} hari)</span></td>
+      <td>${x.status === "SELESAI" ? `<span class="badge done">Selesai</span>` : `<span class="badge open">Berjalan</span><br><span class="muted">hari ke-${x.hari_berjalan}</span>`}</td>
+      <td>${esc(x.pemilik || "-")}</td>
+      <td class="num">${rp(x.sewa_periode)}${x.status === "BERJALAN" ? `<br><span class="muted">s/d hari ini ${rp(x.sewa_sd_hari_ini)}</span>` : ""}</td>
+      <td class="num">${x.trips}${x.masih_jalan ? `<br><span class="muted">${x.masih_jalan} masih jalan</span>` : ""}</td>
+      <td class="num">${rp(x.selling)}</td><td class="num">${rp(x.uang_jalan)}</td><td class="num">${rp(x.kontribusi)}</td>
+      <td class="num"><b>${pl(x.untung)}</b></td><td class="num">${delta(x.selisih_sebelumnya)}</td>
+      <td class="num">${x.utilisasi}%</td><td class="num">${rp(x.biaya_menganggur)}</td></tr>`,
+    onChange: (vis) => {
+      tiles(vis);
+      box.querySelectorAll("[data-period]").forEach((tr) => (tr.onclick = () => {
+        const [cid, ke] = tr.dataset.period.split(":");
+        const x = s.periods.find((p) => String(p.contract_id) === cid && String(p.ke) === ke);
+        box.querySelectorAll("[data-period]").forEach((r) => r.classList.toggle("selected", r === tr));
+        // trip di periode itu: pakai rincian unit yang sudah ada dengan rentang tanggal periode
+        const P = periodOf({ mode: "range", from: x.from, to: x.to });
+        const d = document.getElementById("pDetail");
+        renderDetail(x.vehicle_id, P, d).then(() => d.scrollIntoView({ behavior: "smooth", block: "start" }));
+      }));
+    },
+  });
+  grid.setRows(s.periods);
 }
 
 // ---------------------------------------------------------------- untung rugi
@@ -212,8 +281,7 @@ async function renderProfit(box, P, openUnit) {
   if (openUnit === "all" || s.units.some((x) => String(x.vehicle_id) === String(openUnit))) renderDetail(openUnit, P);
 }
 
-async function renderDetail(vehicleId, P) {
-  const box = document.getElementById("uDetail");
+async function renderDetail(vehicleId, P, box = document.getElementById("uDetail")) {
   box.innerHTML = `${skelTable(6, 7)}`;
   const all = vehicleId === "all";
   const d = all ? await get(`/units/trips?${P.qs}`) : await get(`/units/${vehicleId}/detail?${P.qs}`);
