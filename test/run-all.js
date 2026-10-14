@@ -661,6 +661,12 @@ try {
     assert.deepEqual(p7003.map((x) => [x.ke, x.status, x.from, x.mulai_dalam ?? null, x.untung]),
       [[1, "BERJALAN", day(-10), null, p7003[0].untung], [2, "BELUM_MULAI", day(1), 1, 0]]);
     assert.equal((await viewer.call("GET", "/units/contracts")).find((x) => x.plate_number === "B 7003 PP" && tgl(x.date_start) === day(1)).belum_mulai, true);
+    // diperpanjang: periode berikutnya langsung ada; selama belum mulai statusnya "belum mulai", bukan "berjalan hari ke-0"
+    const c4 = await fin.call("POST", "/units/contracts", { plate_number: "B 7004 PP", truck_type: "CDDL", date_start: day(-29), date_end: day(0), monthly_rent: 9000000 });
+    await fin.call("POST", `/units/contracts/${c4.id}/extend`, {});
+    const p7004 = (await viewer.call("GET", "/units/periods")).periods.filter((x) => x.plate_number === "B 7004 PP");
+    assert.deepEqual(p7004.map((x) => [x.ke, x.status]), [[1, "BERJALAN"], [2, "BELUM_MULAI"]]);
+    assert.equal(p7004[1].from, day(1));
     // tidak bisa menabrak kontrak berikutnya; kontrak tanpa tanggal selesai tidak perlu diperpanjang
     await fin.call("POST", "/units/contracts", { plate_number: "B 7002 PP", truck_type: "CDDL", date_start: "2026-09-17", monthly_rent: 9500000 });
     assert.match(await fin.call("POST", `/units/contracts/${c.id}/extend`, {}, 400), /berikutnya mulai 2026-09-17/);

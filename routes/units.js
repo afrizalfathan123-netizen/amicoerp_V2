@@ -215,6 +215,17 @@ export async function contractPeriods(q) {
     for (const cy of contractCycles(String(c.date_start).slice(0, 10), c.date_end ? String(c.date_end).slice(0, 10) : null, now)) {
       unit.ke += 1;
       const prev = unit.prev;
+      if (cy.from > now) {
+        // periode kontrak yang diperpanjang / sudah tercatat tapi belum mulai: tampil "belum mulai", angka masih 0
+        rows.push({
+          contract_id: c.id, vehicle_id: c.vehicle_id, plate_number: c.plate_number, truck_type: c.truck_type, pemilik: c.pemilik,
+          ke: unit.ke, ke_kontrak: cy.ke, from: cy.from, to: cy.to, hari: cy.hari, hari_berjalan: 0, status: "BELUM_MULAI", mulai_dalam: dayDiff(now, cy.from),
+          sewa_periode: cy.potong ? Math.round((sewa * cy.hari) / cy.hari_penuh) : Math.round(sewa), sewa_sd_hari_ini: 0, biaya_per_hari: 0,
+          trips: 0, masih_jalan: 0, selling: 0, uang_jalan: 0, kontribusi: 0, hari_jalan: 0, hari_menganggur: 0, utilisasi: 0,
+          untung: 0, biaya_menganggur: 0, untung_sebelumnya: null, selisih_sebelumnya: null,
+        });
+        continue;
+      }
       const u = (await summaryOf(cy.from, cy.to)).units.find((x) => x.vehicle_id === c.vehicle_id) || {};
       const status = cy.to < now ? "SELESAI" : "BERJALAN";
       // sewa satu siklus = sewa bulanan penuh (termasuk ekor 1-2 hari yang digabung); siklus terpotong = sebanding jumlah harinya
