@@ -5,6 +5,7 @@ import { openDb } from "../lib/db.js";
 import { migrate } from "../lib/migrate.js";
 import { hashPassword } from "../lib/auth.js";
 import { createApp } from "../server.js";
+const tgl = (v) => (v ? String(v).slice(0, 10) : "");
 
 const db = await openDb({ memory: true });
 await migrate(db, { log: () => {} });
@@ -471,9 +472,12 @@ try {
     assert.ok(all.trips.some((x) => x.job_id === T1.id && x.plate_number === "B 1234 HQ" && x.status === "Selesai"));
     assert.ok((await viewer.call("POST", "/units/export.xlsx", { month: "2026-09", job_ids: [T1.id] })).byteLength > 3000);
     assert.ok((await viewer.call("GET", "/units/export.xlsx?month=2026-09")).byteLength > 3000);
-    // tagihan sewa September: B 1234 HQ penuh 15.000.000, B 7777 XY prorata 15 hari = 3.000.000; tidak dobel kalau dibuat lagi
+    // tagihan sewa per periode kontrak yang mulai di September: B 1234 HQ (mulai 1 Sep) 15.000.000, B 7777 XY (mulai 16 Sep,
+    // periode 16 Sep - 15 Okt) sebulan penuh 6.000.000; jatuh tempo = tanggal mulai periode tiap unit; tidak dobel kalau dibuat lagi
     const g = await fin.call("POST", "/units/rent-bills/generate", { month: "2026-09" });
-    assert.deepEqual([g.count, g.total], [2, 18000000]);
+    assert.deepEqual([g.count, g.total], [2, 21000000]);
+    assert.deepEqual((await viewer.call("GET", "/units/rent-bills?month=2026-09")).map((x) => [x.plate_number, tgl(x.due_date), x.days, x.amount]).sort(),
+      [["B 1234 HQ", "2026-09-01", 30, 15000000], ["B 7777 XY", "2026-09-16", 30, 6000000]]);
     assert.equal((await fin.call("POST", "/units/rent-bills/generate", { month: "2026-09" })).count, 0);
     const bills = await viewer.call("GET", "/units/rent-bills?month=2026-09");
     const b1 = bills.find((x) => x.plate_number === "B 1234 HQ");
@@ -600,6 +604,93 @@ try {
     // utilisasi periode 2: trip 10-11 Sep = 2 dari 30 hari dipakai
     const p2 = periods.find((x) => x.plate_number === "B 5555 PR" && x.ke === 2);
     assert.deepEqual([p2.hari_jalan, p2.hari_menganggur, p2.utilisasi, p2.biaya_menganggur], [2, 28, 7, 8400000]);
+    // tagihan sewa semua periode yang sudah mulai: satu per periode, jatuh tempo per unit = tanggal mulai periodenya
+    await fin.call("POST", "/units/rent-bills/generate", {});
+    const tagihan = (await viewer.call("GET", "/units/rent-bills?all=1")).filter((x) => / PR$/.test(x.plate_number))
+      .map((x) => [x.plate_number, tgl(x.period), tgl(x.due_date), x.days, x.amount]).sort();
+    assert.deepEqual(tagihan, [
+      ["B 5555 PR", "2026-08-01", "2026-08-01", 31, 9000000], ["B 5555 PR", "2026-09-01", "2026-09-01", 30, 9000000],
+      ["B 5556 PR", "2026-08-06", "2026-08-06", 32, 9000000], ["B 5557 PR", "2026-08-01", "2026-08-01", 15, Math.round(9000000 * 15 / 31)],
+    ]);
+    // tagihan model lama per bulan kalender (mulai tanggal 1) yang menutupi tanggal periode: periode itu tidak ditagih lagi
+    await fin.call("POST", "/units/contracts", { plate_number: "B 5558 PR", truck_type: "CDDL", date_start: "2026-09-21", date_end: "2026-10-20", monthly_rent: 9000000 });
+    const cid = (await fin.call("GET", "/units/contracts")).find((x) => x.plate_number === "B 5558 PR").id;
+    const lama = await fin.call("POST", "/units/rent-bills/generate", { month: "2026-09" });   // periode 21 Sep - 20 Okt mulai di September -> dibuat
+    assert.equal(lama.count, 1);
+    const dobel = await fin.call("POST", "/units/rent-bills/generate", {});
+    assert.equal(dobel.skipped.filter((x) => x.plate_number === "B 5558 PR").length, 0);   // periode yang sama tidak dibuat ulang, bukan "tumpang tindih"
+    const b5558 = (await viewer.call("GET", "/units/rent-bills?all=1")).find((x) => x.plate_number === "B 5558 PR");
+    assert.deepEqual([tgl(b5558.dari), tgl(b5558.sampai), b5558.amount], ["2026-09-21", "2026-10-20", 9000000]);
+    await fin.call("POST", `/units/rent-bills/${b5558.id}/cancel`, { reason: "uji tagihan model lama" });
+    // tiru tagihan lama: periode 1 Okt, 20 hari (1-20 Okt)
+    const { insertRow } = await import("../lib/util.js");
+    await db.tx((t) => insertRow(t, "vehicle_rent_bill", { number: "SWA/LAMA/0001", contract_id: cid, period: "2026-10-01", days: 20, amount: 6000000, due_date: "2026-10-15" }));
+    const r2 = await fin.call("POST", "/units/rent-bills/generate", {});
+    assert.deepEqual(r2.skipped.filter((x) => x.plate_number === "B 5558 PR").map((x) => [x.dari, x.sampai, x.karena]), [["2026-09-21", "2026-10-20", "SWA/LAMA/0001"]]);
+    // jatuh tempo bisa diubah per tagihan (FINANCE)
+    const satu = (await viewer.call("GET", "/units/rent-bills?all=1")).find((x) => x.plate_number === "B 5556 PR");
+    assert.match(await ops.call("PUT", `/units/rent-bills/${satu.id}`, { due_date: "2026-08-10" }, 403), /akses/);
+    await fin.call("PUT", `/units/rent-bills/${satu.id}`, { due_date: "2026-08-10" });
+    assert.equal(tgl((await viewer.call("GET", "/units/rent-bills?all=1")).find((x) => x.id === satu.id).due_date), "2026-08-10");
+  });
+
+  await step("periode per unit: kontrak bulanan yang bersambung tetap periode 1, 2, ...; perpanjang 1 bulan di kontrak yang sama", async () => {
+    // cara 1: kontrak dibuat per bulan (16 Jul - 15 Agu, lalu 16 Agu - 15 Sep dengan harga baru)
+    await fin.call("POST", "/units/contracts", { plate_number: "B 7001 PP", truck_type: "CDDL", date_start: "2026-07-16", date_end: "2026-08-15", monthly_rent: 9000000 });
+    await fin.call("POST", "/units/contracts", { plate_number: "B 7001 PP", truck_type: "CDDL", date_start: "2026-08-16", date_end: "2026-09-15", monthly_rent: 8000000 });
+    const T = await ops.call("POST", "/jobs", { job_date: "2026-08-20", customer_id: id.KOTA, pol_id: id.JRT, pod_id: id.SBY, trip_type: "ONE_WAY", truck_type: "CDDL",
+      plate_number: "B 7001 PP", selling_mode: "CUSTOM", selling: 3000000, cost: 1000000 });
+    await ops.call("PUT", `/jobs/${T.id}/trip`, { gate_out_at: "2026-08-20T08:00:00+07:00", gate_in_at: "2026-08-20T20:00:00+07:00" });
+    let ps = (await viewer.call("GET", "/units/periods")).periods.filter((x) => x.plate_number === "B 7001 PP");
+    assert.deepEqual(ps.map((x) => [x.ke, x.from, x.to, x.sewa_periode, x.untung, x.selisih_sebelumnya]), [
+      [1, "2026-07-16", "2026-08-15", 9000000, -9000000, null],
+      [2, "2026-08-16", "2026-09-15", 8000000, -6000000, 3000000],     // dibanding periode 1 walau beda kontrak
+    ]);
+    // cara 2: satu kontrak "habis tanggal 16" diperpanjang sebulan-sebulan
+    const c = await fin.call("POST", "/units/contracts", { plate_number: "B 7002 PP", truck_type: "CDDL", date_start: "2026-07-16", date_end: "2026-08-16", monthly_rent: 9000000 });
+    assert.match(await ops.call("POST", `/units/contracts/${c.id}/extend`, {}, 403), /akses/);
+    assert.equal((await fin.call("POST", `/units/contracts/${c.id}/extend`, {})).date_end, "2026-09-16");
+    ps = (await viewer.call("GET", "/units/periods")).periods.filter((x) => x.plate_number === "B 7002 PP");
+    assert.deepEqual(ps.map((x) => [x.ke, x.from, x.to, x.sewa_periode]), [
+      [1, "2026-07-16", "2026-08-15", 9000000], [2, "2026-08-16", "2026-09-16", 9000000]]);   // ekor 16 Sep ikut periode 2, sewa tetap sebulan
+    // kontrak yang belum mulai: periode pertamanya sudah tampil sebagai "belum mulai" (angka 0), nomornya lanjut per unit
+    const day = (n) => new Date(Date.now() + n * 864e5).toLocaleDateString("sv-SE", { timeZone: "Asia/Jakarta" });
+    await fin.call("POST", "/units/contracts", { plate_number: "B 7003 PP", truck_type: "CDDL", date_start: day(-10), date_end: day(0), monthly_rent: 9000000 });
+    await fin.call("POST", "/units/contracts", { plate_number: "B 7003 PP", truck_type: "CDDL", date_start: day(1), monthly_rent: 9000000 });
+    const p7003 = (await viewer.call("GET", "/units/periods")).periods.filter((x) => x.plate_number === "B 7003 PP");
+    assert.deepEqual(p7003.map((x) => [x.ke, x.status, x.from, x.mulai_dalam ?? null, x.untung]),
+      [[1, "BERJALAN", day(-10), null, p7003[0].untung], [2, "BELUM_MULAI", day(1), 1, 0]]);
+    assert.equal((await viewer.call("GET", "/units/contracts")).find((x) => x.plate_number === "B 7003 PP" && tgl(x.date_start) === day(1)).belum_mulai, true);
+    // tidak bisa menabrak kontrak berikutnya; kontrak tanpa tanggal selesai tidak perlu diperpanjang
+    await fin.call("POST", "/units/contracts", { plate_number: "B 7002 PP", truck_type: "CDDL", date_start: "2026-09-17", monthly_rent: 9500000 });
+    assert.match(await fin.call("POST", `/units/contracts/${c.id}/extend`, {}, 400), /berikutnya mulai 2026-09-17/);
+    const open = (await fin.call("GET", "/units/contracts")).find((x) => x.plate_number === "B 7002 PP" && !x.date_end);
+    assert.match(await fin.call("POST", `/units/contracts/${open.id}/extend`, {}, 400), /tidak perlu diperpanjang/);
+  });
+
+  await step("peringatan unit sewa: kontrak mau habis, kontrak habis tapi unit masih jalan, tagihan sewa telat", async () => {
+    const day = (n) => new Date(Date.now() + n * 864e5).toLocaleDateString("sv-SE", { timeZone: "Asia/Jakarta" });
+    await fin.call("POST", "/units/contracts", { plate_number: "B 6000 AL", truck_type: "CDDL", date_start: day(-20), date_end: day(3), monthly_rent: 9000000 });
+    await fin.call("POST", "/units/contracts", { plate_number: "B 6001 AL", truck_type: "CDDL", date_start: day(-40), date_end: day(-2), monthly_rent: 9000000 });
+    // kontrak berikutnya baru mulai jauh sesudahnya = ada jeda, tetap diperingatkan
+    await fin.call("POST", "/units/contracts", { plate_number: "B 6003 AL", truck_type: "CDDL", date_start: day(-20), date_end: day(1), monthly_rent: 9000000 });
+    await fin.call("POST", "/units/contracts", { plate_number: "B 6003 AL", truck_type: "CDDL", date_start: day(30), monthly_rent: 9000000 });
+    // sudah diperpanjang = tidak diperingatkan
+    await fin.call("POST", "/units/contracts", { plate_number: "B 6002 AL", truck_type: "CDDL", date_start: day(-20), date_end: day(2), monthly_rent: 9000000 });
+    await fin.call("POST", "/units/contracts", { plate_number: "B 6002 AL", truck_type: "CDDL", date_start: day(3), monthly_rent: 9000000 });
+    const T = await ops.call("POST", "/jobs", { job_date: day(-1), customer_id: id.KOTA, pol_id: id.JRT, pod_id: id.SBY, trip_type: "ONE_WAY", truck_type: "CDDL",
+      plate_number: "B 6001 AL", selling_mode: "CUSTOM", selling: 3000000, cost: 1000000 });
+    await ops.call("PUT", `/jobs/${T.id}/trip`, { gate_out_at: `${day(-1)}T08:00:00+07:00`, gate_in_at: `${day(-1)}T20:00:00+07:00` });
+    await fin.call("POST", "/units/rent-bills/generate", {});
+    const a = await viewer.call("GET", "/units/alerts");
+    assert.deepEqual(a.ending.filter((x) => / AL$/.test(x.plate_number)).map((x) => [x.plate_number, x.sisa_hari, x.kontrak_berikutnya ? tgl(x.kontrak_berikutnya) : null]),
+      [["B 6003 AL", 1, day(30)], ["B 6000 AL", 3, null]]);
+    assert.deepEqual(a.ended.filter((x) => / AL$/.test(x.plate_number)).map((x) => [x.plate_number, x.lewat_hari, x.trip_setelah]), [["B 6001 AL", 2, 1]]);
+    const telat = a.bills.find((x) => x.plate_number === "B 6000 AL");
+    // kontrak 24 hari = periode terpotong: tagihannya sebanding hari, telat sejak tanggal mulai periodenya
+    const bill = (await viewer.call("GET", "/units/rent-bills?all=1")).find((x) => x.plate_number === "B 6000 AL");
+    assert.deepEqual([telat.sisa_hari, telat.residual, bill.days], [-20, bill.amount, 24]);
+    assert.ok(bill.amount < 9000000);
   });
 
   await step("kelola user (ADMIN saja) + audit", async () => {

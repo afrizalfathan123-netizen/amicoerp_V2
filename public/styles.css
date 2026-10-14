@@ -433,3 +433,8 @@ td.gate-cell input[type=datetime-local]:disabled { opacity: .45; }
 td.gate-cell input[type=datetime-local]:focus { background: #fff; }
 .gate-note { font-size: 11px; margin-top: 3px; }
 .gate-box button[hidden] { display: none; }
+
+/* ---------------- unit sewa: kotak peringatan kontrak / tagihan ---------------- */
+.unit-alerts { margin: 0 0 14px; }
+.unit-alerts ul { margin: 6px 0 0; padding-left: 18px; }
+.unit-alerts li { margin: 3px 0; }

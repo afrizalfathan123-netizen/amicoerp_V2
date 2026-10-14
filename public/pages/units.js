@@ -1,5 +1,5 @@
 // Unit sewa: untung rugi per unit per bulan (+ rincian trip & kalender hari), kontrak sewa, tagihan sewa bulanan.
-import { get, api, view, esc, rp, tgl, jam, table, tile, toast, openModal, askReason, options, vendors, bankLabel, num, state,
+import { get, api, view, esc, rp, tgl, jam, kv, table, tile, toast, openModal, askReason, options, vendors, bankLabel, num, state,
   canFinance, bindRows, skelTable } from "../lib.js";
 import { xlTable } from "../xlfilter.js";
 
@@ -40,8 +40,10 @@ export async function renderUnits() {
         ${P.mode === "range" ? `<label>Dari<input type="date" id="uFrom" value="${esc(P.from)}"></label>
           <label>Sampai<input type="date" id="uTo" value="${esc(P.to)}"></label>` : ""}
       </div></div>
+    <div id="uAlerts"></div>
     <div class="tabs">${Object.entries(TABS).map(([k, l]) => `<a href="#" data-tab="${k}" class="${k === tab ? "active" : ""}">${esc(l)}</a>`).join("")}</div>
     <div id="uBox">${skelTable(6, 7)}</div>`;
+  showAlerts();
   view().querySelectorAll("[data-tab]").forEach((a) => (a.onclick = (e) => { e.preventDefault(); save({ tab: a.dataset.tab }); renderUnits(); }));
   document.getElementById("uMode").onchange = (e) => { save({ mode: e.target.value }); renderUnits(); };
   document.getElementById("uMonth")?.addEventListener("change", (e) => { save({ month: e.target.value || thisMonth() }); renderUnits(); });
@@ -58,12 +60,45 @@ export async function renderUnits() {
   return renderProfit(box, P, saved.unit);
 }
 
+// ---------------------------------------------------------------- peringatan
+const hariLagi = (n) => (n === 0 ? "hari ini" : n === 1 ? "besok" : `${n} hari lagi`);
+async function showAlerts() {
+  const a = await get("/units/alerts").catch(() => null);
+  const box = document.getElementById("uAlerts");
+  if (!a || !box) return;
+  const items = [
+    ...a.ending.map((x) => `<li><b>Kontrak ${esc(x.plate_number)} habis ${tglId(x.date_end)}</b> (${hariLagi(x.sisa_hari)}). ${x.kontrak_berikutnya
+      ? `Kontrak berikutnya baru mulai ${tglId(x.kontrak_berikutnya)}, jadi ada jeda tanpa kontrak.`
+      : `Biarkan kalau unit dikembalikan.${canFinance() ? ` <button type="button" class="small primary" data-alert-extend="${x.contract_id}" data-plate="${esc(x.plate_number)}" data-end="${tgl(x.date_end)}">Perpanjang 1 bulan</button>` : ""}`}</li>`),
+    ...a.ended.map((x) => `<li><b>Kontrak ${esc(x.plate_number)} sudah habis ${tglId(x.date_end)}</b>${x.trip_setelah ? `, tapi masih ada <b>${x.trip_setelah} trip</b> setelahnya (sewanya tidak terhitung).` : "."}
+      ${x.kontrak_berikutnya ? `Kontrak berikutnya baru mulai ${tglId(x.kontrak_berikutnya)}.` : "Belum diperpanjang."}</li>`),
+    ...a.bills.map((x) => `<li>Tagihan sewa <b>${esc(x.number)}</b> (${esc(x.plate_number)}) ${x.sisa_hari < 0 ? `<b>telat ${-x.sisa_hari} hari</b> (jatuh tempo ${tglId(x.due_date)})` : `jatuh tempo ${hariLagi(x.sisa_hari)} (${tglId(x.due_date)})`}, sisa ${rp(x.residual)}.</li>`),
+  ];
+  box.innerHTML = items.length ? `<div class="note-box warn-box unit-alerts"><b>Perlu perhatian</b><ul>${items.join("")}</ul></div>` : "";
+  box.querySelectorAll("[data-alert-extend]").forEach((b) => (b.onclick = () =>
+    extendContract({ id: Number(b.dataset.alertExtend), plate_number: b.dataset.plate, date_end: b.dataset.end })));
+}
+
+// perpanjang kontrak 1 bulan (tanggal yang sama bulan berikutnya)
+function extendContract(c) {
+  const [y, m, d] = tgl(c.date_end).split("-").map(Number);
+  const last = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+  const baru = new Date(Date.UTC(y, m, Math.min(d, last))).toISOString().slice(0, 10);
+  openModal({
+    title: `Perpanjang kontrak ${c.plate_number}`,
+    body: `<div class="kv">${kv("Selesai sekarang", tglId(tgl(c.date_end)))}${kv("Selesai baru", tglId(baru))}</div>
+      <div class="note-box">Kontrak yang sama diperpanjang sebulan dengan harga sewa yang sama. Harga berubah? Batalkan, isi tanggal selesai kontrak ini lalu buat kontrak baru.</div>`,
+    submitLabel: "Perpanjang",
+    onSubmit: async () => { const r = await api("POST", `/units/contracts/${c.id}/extend`, { months: 1 }); toast(`Kontrak ${c.plate_number} diperpanjang sampai ${tglId(r.date_end)}`); reload(); },
+  });
+}
+
 // ---------------------------------------------------------------- per periode kontrak
 const PERIOD_COLS = [
   { key: "plate_number", label: "Unit", value: (x) => x.plate_number },
   { key: "ke", label: "Periode", num: true, value: (x) => x.ke, text: (x) => `Periode ${x.ke}` },
   { key: "from", label: "Tanggal", value: (x) => x.from, text: (x) => `${tglId(x.from)} – ${tglId(x.to)}` },
-  { key: "status", label: "Status", value: (x) => (x.status === "SELESAI" ? "Selesai" : "Berjalan") },
+  { key: "status", label: "Status", value: (x) => ({ SELESAI: "Selesai", BERJALAN: "Berjalan", BELUM_MULAI: "Belum mulai" }[x.status]) },
   { key: "pemilik", label: "Pemilik", value: (x) => x.pemilik },
   { key: "sewa_periode", label: "Sewa periode", num: true, value: (x) => x.sewa_periode },
   { key: "trips", label: "Trip", num: true, value: (x) => x.trips, text: (x) => String(x.trips) },
@@ -77,7 +112,17 @@ const PERIOD_COLS = [
 ];
 
 async function renderPeriods(box) {
-  const s = await get("/units/periods");
+  const [s, al] = await Promise.all([get("/units/periods"), get("/units/alerts").catch(() => ({ ending: [], ended: [] }))]);
+  // periode terakhir kontrak yang mau / sudah habis diberi tanda
+  const lastKe = new Map();
+  for (const x of s.periods) lastKe.set(x.contract_id, Math.max(lastKe.get(x.contract_id) || 0, x.ke));
+  const endNote = (x) => {
+    if (lastKe.get(x.contract_id) !== x.ke) return "";
+    const e = al.ending.find((y) => y.contract_id === x.contract_id);
+    if (e) return `<br><span class="badge warn">Kontrak habis ${hariLagi(e.sisa_hari)}</span>`;
+    const d = al.ended.find((y) => y.contract_id === x.contract_id);
+    return d ? `<br><span class="badge cancelled">Kontrak sudah habis</span>` : "";
+  };
   box.innerHTML = `
     <div class="note-box" style="margin:0 0 14px">Satu <b>periode</b> = satu bulan sewa mengikuti tanggal mulai kontrak (mulai 21 Sep: periode 1 = 21 Sep – 20 Okt,
       periode 2 = 21 Okt – 20 Nov, ...), bukan bulan kalender. <b>Sewa periode</b> = sewa bulanan penuh (periode yang terpotong tanggal selesai kontrak dihitung sebanding harinya).
@@ -103,13 +148,16 @@ async function renderPeriods(box) {
     rowHtml: (x) => `<tr class="click" data-period="${x.contract_id}:${x.ke}">
       <td><b>${esc(x.plate_number)}</b><br><span class="muted">${esc(x.truck_type)}</span></td><td class="num">${x.ke}</td>
       <td class="nowrap">${tglId(x.from)} –<br>${tglId(x.to)} <span class="muted">(${x.hari} hari)</span></td>
-      <td>${x.status === "SELESAI" ? `<span class="badge done">Selesai</span>` : `<span class="badge open">Berjalan</span><br><span class="muted">hari ke-${x.hari_berjalan}</span>`}</td>
+      <td>${x.status === "SELESAI" ? `<span class="badge done">Selesai</span>`
+        : x.status === "BELUM_MULAI" ? `<span class="badge draft">Belum mulai</span><br><span class="muted">mulai ${hariLagi(x.mulai_dalam)}</span>`
+        : `<span class="badge open">Berjalan</span><br><span class="muted">hari ke-${x.hari_berjalan}</span>`}${endNote(x)}</td>
       <td>${esc(x.pemilik || "-")}</td>
       <td class="num">${rp(x.sewa_periode)}${x.status === "BERJALAN" ? `<br><span class="muted">s/d hari ini ${rp(x.sewa_sd_hari_ini)}</span>` : ""}</td>
+      ${x.status === "BELUM_MULAI" ? `<td class="muted" colspan="8">Kontrak berikutnya, mulai ${tglId(x.from)}. Angka terisi begitu periodenya berjalan.</td>` : `
       <td class="num">${x.trips}${x.masih_jalan ? `<br><span class="muted">${x.masih_jalan} masih jalan</span>` : ""}</td>
       <td class="num">${rp(x.selling)}</td><td class="num">${rp(x.uang_jalan)}</td><td class="num">${rp(x.kontribusi)}</td>
       <td class="num"><b>${pl(x.untung)}</b></td><td class="num">${delta(x.selisih_sebelumnya)}</td>
-      <td class="num">${x.utilisasi}%</td><td class="num">${rp(x.biaya_menganggur)}</td></tr>`,
+      <td class="num">${x.utilisasi}%</td><td class="num">${rp(x.biaya_menganggur)}</td>`}</tr>`,
     onChange: (vis) => {
       tiles(vis);
       box.querySelectorAll("[data-period]").forEach((tr) => (tr.onclick = () => {
@@ -334,9 +382,14 @@ async function renderContracts(box) {
       ${table(`<th>Unit</th><th>Pemilik</th><th>Mulai</th><th>Selesai</th><th class="num">Sewa / bulan</th><th class="num">Biaya tetap lain</th><th>Status</th><th>Catatan</th><th></th>`,
         list.map((c) => `<tr><td><b>${esc(c.plate_number)}</b><br><span class="muted">${esc(c.truck_type)}</span></td><td>${esc(c.partner || "-")}</td>
           <td>${tgl(c.date_start)}</td><td>${c.date_end ? tgl(c.date_end) : "-"}</td><td class="num">${rp(c.monthly_rent)}</td><td class="num">${rp(c.other_monthly_cost)}</td>
-          <td>${c.berjalan ? `<span class="badge posted">Berjalan</span>` : `<span class="badge cancelled">Selesai</span>`}</td><td class="small-text">${esc(c.note || "")}</td>
-          <td class="nowrap">${canFinance() ? `<button class="small" data-edit="${c.id}">Ubah</button> <button class="small danger" data-del="${c.id}">Hapus</button>` : ""}</td></tr>`).join(""), "Belum ada kontrak sewa")}
-      <div class="note-box">Harga sewa berubah? Isi tanggal selesai di kontrak lama, lalu buat kontrak baru mulai tanggal harga baru, supaya bulan-bulan lama tetap memakai harga lama.</div>
+          <td>${c.belum_mulai ? `<span class="badge draft">Belum mulai</span><br><span class="muted">mulai ${tglId(tgl(c.date_start))}</span>`
+            : c.berjalan ? `<span class="badge posted">Berjalan</span>` : `<span class="badge cancelled">Selesai</span>`}</td><td class="small-text">${esc(c.note || "")}</td>
+          <td class="nowrap">${canFinance() ? `${c.date_end ? `<button class="small primary" data-extend="${c.id}">Perpanjang 1 bulan</button> ` : ""}<button class="small" data-edit="${c.id}">Ubah</button> <button class="small danger" data-del="${c.id}">Hapus</button>` : ""}</td></tr>`).join(""), "Belum ada kontrak sewa")}
+      <div class="note-box"><b>Sewa diperpanjang dengan harga sama?</b> Klik <b>Perpanjang 1 bulan</b> (tanggal selesai mundur sebulan, misalnya habis 16 Okt jadi 16 Nov),
+        tidak perlu membuat kontrak baru. Periodenya tetap mengikuti tanggal mulai (16 Sep - 15 Okt, 16 Okt - 15 Nov, ...). Unit yang disewa terus tanpa tanggal kembali:
+        kosongkan <b>Selesai sewa</b>, periode baru muncul sendiri tiap bulan.<br>
+        <b>Harga sewa berubah?</b> Isi tanggal selesai di kontrak lama, lalu buat kontrak baru mulai sehari sesudahnya. Di tab Per periode kontrak, periodenya tetap
+        bersambung dan dibandingkan dengan periode sebelumnya unit itu.</div>
     </div>`;
   const form = (c = {}) => openModal({
     title: c.id ? `Ubah kontrak ${c.plate_number}` : "Kontrak sewa baru",
@@ -366,6 +419,7 @@ async function renderContracts(box) {
   });
   document.getElementById("newContract")?.addEventListener("click", () => form());
   box.querySelectorAll("[data-edit]").forEach((b) => (b.onclick = () => form(list.find((c) => c.id === Number(b.dataset.edit)))));
+  box.querySelectorAll("[data-extend]").forEach((b) => (b.onclick = () => extendContract(list.find((c) => c.id === Number(b.dataset.extend)))));
   box.querySelectorAll("[data-del]").forEach((b) => (b.onclick = () => {
     const c = list.find((x) => x.id === Number(b.dataset.del));
     askReason(`Hapus kontrak ${c.plate_number}`, "Hanya bisa kalau kontrak belum punya tagihan sewa. Unit tetap ada di Master Data > Kendaraan.",
@@ -375,39 +429,67 @@ async function renderContracts(box) {
 
 // ---------------------------------------------------------------- tagihan sewa
 async function renderBills(box, P) {
-  const month = P.month;
   const list = await get(`/units/rent-bills?${P.qs}`);
+  const now = new Date().toLocaleDateString("sv-SE", { timeZone: "Asia/Jakarta" });
+  const dueCell = (b) => {
+    if (!b.due_date) return "-";
+    const late = b.state === "posted" && b.residual > 0.004 && tgl(b.due_date) < now;
+    return `${tglId(tgl(b.due_date))}${late ? `<br><span class="badge warn">Telat</span>` : ""}
+      ${canFinance() && b.state === "posted" && b.residual > 0.004 ? `<br><a href="#" data-due="${b.id}">ubah</a>` : ""}`;
+  };
   const total = (k) => list.filter((b) => b.state === "posted").reduce((a, b) => a + Number(b[k]), 0);
   box.innerHTML = `
     <div class="tiles">${tile(`Tagihan sewa ${P.label}`, total("amount"), "out", `${list.filter((b) => b.state === "posted").length} tagihan`)}
       ${tile("Sudah dibayar", total("paid"), "")}${tile("Belum dibayar", total("residual"), total("residual") > 0 ? "warn" : "")}</div>
     <div class="panel"><h2>Tagihan sewa ${esc(P.label)}
-        ${canFinance() && P.mode === "month" ? `<span class="spacer"></span><button class="primary small" id="genBills">Buat tagihan sewa ${esc(monthName(month))}</button>` : ""}</h2>
-      ${P.mode !== "month" ? `<div class="note-box">Untuk membuat tagihan, pilih periode <b>Per bulan</b> lalu bulannya.</div>` : ""}
-      ${table(`<th>Nomor</th><th>Unit</th><th>Pemilik</th><th class="num">Hari</th><th class="num">Tagihan</th><th class="num">Dibayar</th><th class="num">Sisa</th><th>Jatuh tempo</th><th>Status</th><th></th>`,
+        ${canFinance() ? `<span class="spacer"></span><button class="primary small" id="genBills">Buat tagihan periode yang sudah mulai</button>` : ""}</h2>
+      ${table(`<th>Nomor</th><th>Unit</th><th>Pemilik</th><th>Periode sewa</th><th class="num">Hari</th><th class="num">Tagihan</th><th class="num">Dibayar</th><th class="num">Sisa</th><th>Jatuh tempo</th><th>Status</th><th></th>`,
         list.map((b) => `<tr class="${b.state === "cancelled" ? "rev" : ""}"><td><b>${esc(b.number)}</b></td><td>${esc(b.plate_number)}</td><td>${esc(b.partner || "-")}</td>
+          <td class="nowrap">${tglId(tgl(b.dari))} –<br>${tglId(tgl(b.sampai))}</td>
           <td class="num">${b.days}</td><td class="num">${rp(b.amount)}</td><td class="num">${rp(b.paid)}</td><td class="num">${rp(b.residual)}</td>
-          <td>${b.due_date ? tgl(b.due_date) : "-"}</td>
+          <td class="nowrap">${dueCell(b)}</td>
           <td>${b.state === "cancelled" ? `<span class="badge cancelled">Batal</span><br><span class="muted">${esc(b.cancel_reason || "")}</span>`
             : b.residual <= 0.004 ? `<span class="badge lunas">Lunas</span>` : `<span class="badge open">Belum lunas</span>`}
             ${(b.payments || []).map((p) => `<div class="muted small-text">${tgl(p.pay_date)} ${rp(p.amount)} ${esc(p.bank || "")}${p.note ? ` · ${esc(p.note)}` : ""}
               ${canFinance() && !p.reversed && p.amount > 0 ? ` <a href="#" data-rev="${p.id}">batal bayar</a>` : ""}</div>`).join("")}</td>
           <td class="nowrap">${canFinance() && b.state === "posted" && b.residual > 0.004 ? `<button class="small primary" data-pay="${b.id}">Bayar</button>` : ""}
             ${canFinance() && b.state === "posted" && Math.abs(b.paid) < 0.005 ? `<button class="small danger" data-cancel="${b.id}">Batalkan</button>` : ""}</td></tr>`).join(""),
-        "Belum ada tagihan sewa bulan ini")}
-      <div class="note-box">Tagihan dibuat satu per kontrak per bulan, prorata kalau sewa mulai / selesai di tengah bulan. Pembayaran sewa belum masuk ke
-        Kas &amp; Rekening / Jurnal Kas (menunggu keputusan finance cara pencatatannya).</div>
+        `Belum ada tagihan sewa yang periodenya mulai di ${P.label}`)}
+      <div class="note-box">Tagihan dibuat satu per kontrak per <b>periode sewa</b> (mengikuti tanggal mulai kontrak, sama dengan tab Per periode kontrak).
+        <b>Jatuh tempo</b> bawaan = tanggal mulai periode unit itu, jadi tiap unit beda (mulai tanggal 21 = jatuh tempo tiap tanggal 21); klik "ubah" untuk
+        tagihan yang dibayar di tanggal lain. Periode yang terpotong tanggal selesai kontrak ditagih sebanding harinya. Tabel ini menampilkan tagihan yang
+        periodenya mulai di ${esc(P.label)}. Pembayaran sewa belum masuk ke Kas &amp; Rekening / Jurnal Kas (menunggu keputusan finance cara pencatatannya).</div>
     </div>`;
   document.getElementById("genBills")?.addEventListener("click", () => openModal({
-    title: `Buat tagihan sewa ${monthName(month)}`,
-    body: `<div class="form-grid"><label>Jatuh tempo<input type="date" name="due_date"></label><label class="wide">Catatan<input name="note"></label></div>
-      <div class="note-box">Dibuat untuk semua kontrak yang berjalan di bulan ini dan belum punya tagihan.</div>`,
+    title: "Buat tagihan sewa",
+    body: `<label class="wide">Catatan (opsional)<input name="note"></label>
+      <div class="note-box">Dibuat untuk semua kontrak, satu tagihan per periode sewa yang sudah mulai (sampai hari ini) dan belum punya tagihan.
+        Jatuh tempo tiap tagihan = tanggal mulai periode unitnya.</div>`,
     submitLabel: "Buat tagihan",
     onSubmit: async (d) => {
-      const r = await api("POST", "/units/rent-bills/generate", { month, ...d });
-      toast(r.count ? `${r.count} tagihan dibuat, total ${rp(r.total)}` : "Semua kontrak sudah punya tagihan bulan ini");
+      const r = await api("POST", "/units/rent-bills/generate", d);
+      toast(r.count ? `${r.count} tagihan dibuat, total ${rp(r.total)}`
+        : r.skipped?.length ? "Tidak ada tagihan baru" : "Semua periode yang sudah mulai sudah punya tagihan");
+      // periode yang tanggalnya sudah tercakup tagihan lain (mis. tagihan lama per bulan) tidak dibuat supaya tidak dobel
+      if (r.skipped?.length) openModal({
+        title: `${r.skipped.length} periode tidak ditagih supaya tidak dobel`,
+        body: `${table("<th>Unit</th><th>Periode</th><th>Sudah tercakup tagihan</th>",
+          r.skipped.map((x) => `<tr><td><b>${esc(x.plate_number)}</b></td><td>${tglId(x.dari)} – ${tglId(x.sampai)}</td><td>${esc(x.karena)}</td></tr>`).join(""))}
+          <div class="note-box">Tagihan itu dibuat dengan cara lama (per bulan kalender). Kalau mau pindah ke tagihan per periode kontrak,
+            batalkan tagihan lama yang belum dibayar, lalu klik "Buat tagihan periode yang sudah mulai" lagi.</div>`,
+      });
       reload();
+      return r.skipped?.length ? true : undefined;     // true = jendela daftar di atas tetap terbuka
     },
+  }));
+  box.querySelectorAll("[data-due]").forEach((a) => (a.onclick = (e) => {
+    e.preventDefault();
+    const b = list.find((x) => x.id === Number(a.dataset.due));
+    openModal({
+      title: `Jatuh tempo ${b.number} (${b.plate_number})`,
+      body: `<label>Jatuh tempo<input type="date" name="due_date" value="${esc(tgl(b.due_date))}" required></label>`,
+      onSubmit: async (d) => { await api("PUT", `/units/rent-bills/${b.id}`, d); toast("Jatuh tempo diubah"); reload(); },
+    });
   }));
   box.querySelectorAll("[data-pay]").forEach((btn) => (btn.onclick = () => {
     const b = list.find((x) => x.id === Number(btn.dataset.pay));

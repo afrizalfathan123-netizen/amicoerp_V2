@@ -183,7 +183,7 @@ export async function contractPeriods(q) {
   const now = today();
   const contracts = await q.query(
     `select c.*, v.plate_number, v.truck_type, p.name as pemilik from vehicle_contract c join vehicle v on v.id = c.vehicle_id
-     left join res_partner p on p.id = c.partner_id where c.date_start <= $1 order by v.plate_number, c.date_start`, [now]);
+     left join res_partner p on p.id = c.partner_id where c.date_start <= $1::date + 45 order by v.plate_number, c.date_start`, [now]);
   const rows = [];
   // ringkasan unit untuk satu rentang tanggal dipakai bersama oleh kontrak lain yang siklusnya sama
   const cache = new Map();
@@ -191,10 +191,30 @@ export async function contractPeriods(q) {
     if (!cache.has(`${from}|${to}`)) cache.set(`${from}|${to}`, unitSummary(q, { from, to }));
     return cache.get(`${from}|${to}`);
   };
+  // periode dinomori per UNIT, bukan per kontrak: kontrak bulanan yang bersambung (16 Sep - 15 Okt, lalu 16 Okt - 15 Nov)
+  // tetap jadi periode 1, 2, ... dan dibandingkan dengan periode sebelumnya unit yang sama
+  const perUnit = new Map();   // vehicle_id -> { ke, prev }
   for (const c of contracts) {
     const sewa = Number(c.monthly_rent) + Number(c.other_monthly_cost || 0);
-    let prev = null;
+    const unit = perUnit.get(c.vehicle_id) || { ke: 0, prev: null };
+    perUnit.set(c.vehicle_id, unit);
+    const startStr = String(c.date_start).slice(0, 10);
+    if (startStr > now) {
+      // kontrak yang belum mulai (mis. perpanjangan mulai besok): periode pertamanya tampil sebagai "belum mulai", angka masih 0
+      const [cy] = contractCycles(startStr, c.date_end ? String(c.date_end).slice(0, 10) : null, startStr);
+      unit.ke += 1;
+      rows.push({
+        contract_id: c.id, vehicle_id: c.vehicle_id, plate_number: c.plate_number, truck_type: c.truck_type, pemilik: c.pemilik,
+        ke: unit.ke, ke_kontrak: 1, from: cy.from, to: cy.to, hari: cy.hari, hari_berjalan: 0, status: "BELUM_MULAI", mulai_dalam: dayDiff(now, cy.from),
+        sewa_periode: cy.potong ? Math.round((sewa * cy.hari) / cy.hari_penuh) : Math.round(sewa), sewa_sd_hari_ini: 0, biaya_per_hari: 0,
+        trips: 0, masih_jalan: 0, selling: 0, uang_jalan: 0, kontribusi: 0, hari_jalan: 0, hari_menganggur: 0, utilisasi: 0,
+        untung: 0, biaya_menganggur: 0, untung_sebelumnya: null, selisih_sebelumnya: null,
+      });
+      continue;
+    }
     for (const cy of contractCycles(String(c.date_start).slice(0, 10), c.date_end ? String(c.date_end).slice(0, 10) : null, now)) {
+      unit.ke += 1;
+      const prev = unit.prev;
       const u = (await summaryOf(cy.from, cy.to)).units.find((x) => x.vehicle_id === c.vehicle_id) || {};
       const status = cy.to < now ? "SELESAI" : "BERJALAN";
       // sewa satu siklus = sewa bulanan penuh (termasuk ekor 1-2 hari yang digabung); siklus terpotong = sebanding jumlah harinya
@@ -204,7 +224,7 @@ export async function contractPeriods(q) {
       const perHari = sewaPeriode / cy.hari;
       const row = {
         contract_id: c.id, vehicle_id: c.vehicle_id, plate_number: c.plate_number, truck_type: c.truck_type, pemilik: c.pemilik,
-        ke: cy.ke, from: cy.from, to: cy.to, hari: cy.hari, hari_berjalan: berjalan, status,
+        ke: unit.ke, ke_kontrak: cy.ke, from: cy.from, to: cy.to, hari: cy.hari, hari_berjalan: berjalan, status,
         sewa_periode: sewaPeriode, sewa_sd_hari_ini: sewaSdHariIni, biaya_per_hari: Math.round(perHari),
         trips: u.trips || 0, masih_jalan: u.masih_jalan || 0, selling: u.selling || 0, uang_jalan: u.uang_jalan || 0, kontribusi: u.kontribusi || 0,
         hari_jalan: u.hari_jalan || 0, hari_menganggur: u.hari_menganggur || 0, utilisasi: u.utilisasi || 0,
@@ -215,10 +235,42 @@ export async function contractPeriods(q) {
       row.untung_sebelumnya = prev ? prev.untung : null;
       row.selisih_sebelumnya = prev ? money(row.untung - prev.untung) : null;
       rows.push(row);
-      prev = row;
+      unit.prev = row;
     }
   }
   return { today: now, periods: rows };
+}
+
+// Yang perlu perhatian: kontrak habis <= 7 hari lagi (belum diperpanjang), kontrak sudah habis tapi unit masih dipakai trip
+// (sewanya tidak terhitung), dan tagihan sewa yang jatuh tempo <= 3 hari lagi / sudah lewat dan belum lunas.
+export const HARI_PERINGATAN_KONTRAK = 7;
+export async function unitAlerts(q) {
+  const now = today();
+  // "sudah diperpanjang" = ada kontrak unit yang sama yang mulai paling lambat sehari setelah kontrak ini habis.
+  // Kontrak berikutnya yang mulai jauh sesudahnya tetap diperingatkan (ada jeda tanpa kontrak).
+  const next = `(select min(n.date_start) from vehicle_contract n where n.vehicle_id = c.vehicle_id and n.date_start > c.date_end)`;
+  const ending = await q.query(
+    `select * from (
+       select c.id as contract_id, v.plate_number, c.date_end, (c.date_end - $1::date) as sisa_hari, p.name as pemilik, ${next} as kontrak_berikutnya
+       from vehicle_contract c join vehicle v on v.id = c.vehicle_id left join res_partner p on p.id = c.partner_id
+       where c.date_end between $1::date and $1::date + $2::int) x
+     where kontrak_berikutnya is null or kontrak_berikutnya > date_end + 1
+     order by date_end, plate_number`, [now, HARI_PERINGATAN_KONTRAK]);
+  const ended = await q.query(
+    `select * from (
+       select c.id as contract_id, v.plate_number, c.date_end, ($1::date - c.date_end) as lewat_hari, ${next} as kontrak_berikutnya,
+              (select count(*)::int from v_vehicle_trip t where t.vehicle_id = c.vehicle_id and t.day_from > c.date_end
+                 and t.day_from < coalesce(${next}, '9999-12-31'::date)) as trip_setelah
+       from vehicle_contract c join vehicle v on v.id = c.vehicle_id
+       where c.date_end < $1::date and c.date_end >= $1::date - 31) x
+     where kontrak_berikutnya is null or kontrak_berikutnya > date_end + 1
+     order by date_end desc, plate_number`, [now]);
+  const bills = await q.query(
+    `select b.id, b.number, v.plate_number, b.due_date, b.residual, (b.due_date - $1::date) as sisa_hari
+     from v_vehicle_rent_bill b join vehicle_contract c on c.id = b.contract_id join vehicle v on v.id = c.vehicle_id
+     where b.state = 'posted' and b.residual > 0.004 and b.due_date is not null and b.due_date <= $1::date + 3
+     order by b.due_date, v.plate_number`, [now]);
+  return { today: now, hari_peringatan: HARI_PERINGATAN_KONTRAK, ending, ended: ended.filter((x) => x.trip_setelah > 0 || x.lewat_hari <= 7), bills };
 }
 
 // ringkasan periode + rincian per bulan (kalau periode lebih dari satu bulan)
@@ -241,6 +293,8 @@ export default function unitRoutes(db) {
   r.get("/units/summary", read, route(async (req) => summaryWithMonths(db, await periodOf(db, req.query))));
   // untung rugi per siklus kontrak sewa (bandingkan periode 1, 2, ... tiap unit)
   r.get("/units/periods", read, route(() => contractPeriods(db)));
+  // peringatan di atas halaman Unit Sewa
+  r.get("/units/alerts", read, route(() => unitAlerts(db)));
   // semua trip unit sewa dalam periode (untuk analisa lintas unit)
   r.get("/units/trips", read, route(async (req) => {
     const pr = await periodOf(db, req.query);
@@ -319,7 +373,8 @@ export default function unitRoutes(db) {
   // ---------------------------------------------------------------- kontrak sewa
   r.get("/units/contracts", read, route(() => db.query(
     `select c.*, v.plate_number, v.truck_type, p.name as partner,
-            (c.date_end is null or c.date_end >= (now() at time zone 'Asia/Jakarta')::date) as berjalan
+            (c.date_end is null or c.date_end >= (now() at time zone 'Asia/Jakarta')::date) as berjalan,
+            c.date_start > (now() at time zone 'Asia/Jakarta')::date as belum_mulai
      from vehicle_contract c join vehicle v on v.id = c.vehicle_id left join res_partner p on p.id = c.partner_id
      order by berjalan desc, v.plate_number, c.date_start desc`)));
 
@@ -406,6 +461,25 @@ export default function unitRoutes(db) {
   r.put("/units/contracts/:id", requireRole(ROLES.FINANCE), route((req) => db.tx(async (t) => ({ id: await saveContract(t, req, Number(req.params.id)) }))));
 
   // hapus kontrak: hanya kalau belum punya tagihan sewa (tagihan = dokumen keuangan). Unit tetap ada di master Kendaraan.
+  // Perpanjang: tanggal selesai mundur N bulan di kontrak yang sama (tanggal yang sama bulan berikutnya: habis 16 Okt -> 16 Nov),
+  // jadi periode tetap 16 - 15 dan tidak perlu kontrak baru tiap bulan. Harga baru tetap lewat kontrak baru.
+  r.post("/units/contracts/:id/extend", requireRole(ROLES.FINANCE), route((req) => db.tx(async (t) => {
+    const id = Number(req.params.id);
+    const months = Math.max(1, Math.min(24, Number(req.body?.months) || 1));
+    const [c] = await t.query(
+      "select c.*, v.plate_number from vehicle_contract c join vehicle v on v.id = c.vehicle_id where c.id = $1 for update of c", [id]);
+    if (!c) fail("Kontrak tidak ditemukan", 404);
+    if (!c.date_end) fail(`Kontrak ${c.plate_number} tidak punya tanggal selesai (berjalan terus), tidak perlu diperpanjang`);
+    const end = addMonthsClamp(String(c.date_end).slice(0, 10), months);
+    const [next] = await t.query(
+      "select date_start from vehicle_contract where vehicle_id = $1 and id <> $2 and date_start > $3 and date_start <= $4 order by date_start limit 1",
+      [c.vehicle_id, id, c.date_end, end]);
+    if (next) fail(`Sudah ada kontrak ${c.plate_number} berikutnya mulai ${String(next.date_start).slice(0, 10)}. Perpanjang sampai sebelum tanggal itu, atau ubah kontrak tersebut.`);
+    await t.query("update vehicle_contract set date_end = $1 where id = $2", [end, id]);
+    await audit(t, req, "vehicle_contract", id, "extend", { dari: c.date_end, ke: end, bulan: months });
+    return { id, date_end: end };
+  })));
+
   r.delete("/units/contracts/:id", requireRole(ROLES.FINANCE), route((req) => db.tx(async (t) => {
     const id = Number(req.params.id);
     const [c] = await t.query(
@@ -426,6 +500,7 @@ export default function unitRoutes(db) {
     const rg = { from: `${pr.from.slice(0, 7)}-01`, to: pr.to };
     return db.query(
       `select b.*, v.plate_number, v.truck_type, p.name as partner, c.monthly_rent,
+              greatest(b.period, c.date_start) as dari, greatest(b.period, c.date_start) + b.days - 1 as sampai,
               (select json_agg(json_build_object('id', x.id, 'pay_date', x.pay_date, 'amount', x.amount, 'note', x.note,
                  'reversed', x.reversed_payment_id is not null or exists (select 1 from vehicle_rent_payment y where y.reversed_payment_id = x.id),
                  'bank', ba.name) order by x.id)
@@ -437,27 +512,57 @@ export default function unitRoutes(db) {
   }));
 
   // buat tagihan sewa untuk semua kontrak yang berjalan di bulan itu (prorata hari), yang sudah ada dilewati
+  // Tagihan sewa = satu per kontrak per PERIODE KONTRAK (siklus sewa mengikuti tanggal mulai kontrak, sama dengan tab
+  // "Per periode kontrak"). Jatuh tempo bawaan = tanggal mulai periode unit itu, jadi tiap unit beda (bisa diubah per tagihan).
+  // Dibuat untuk semua periode yang sudah mulai (s/d hari ini) dan belum punya tagihan; ?month=YYYY-MM = hanya periode yang mulai di bulan itu.
   r.post("/units/rent-bills/generate", requireRole(ROLES.FINANCE), route((req) => db.tx(async (t) => {
-    const rg = monthRange(req.body?.month);
-    const list = await t.query(
-      `select c.*, greatest(c.date_start, $1::date) as d1, least(coalesce(c.date_end, $2::date), $2::date) as d2
-       from vehicle_contract c
-       where c.date_start <= $2 and coalesce(c.date_end, $2) >= $1
-         and not exists (select 1 from vehicle_rent_bill b where b.contract_id = c.id and b.period = $1 and b.state = 'posted')
-       for update of c`, [rg.from, rg.to]);
-    const made = [];
-    for (const c of list) {
-      const days = Math.round((Date.parse(`${c.d2}T00:00:00Z`) - Date.parse(`${c.d1}T00:00:00Z`)) / 864e5) + 1;
-      const amount = money((Number(c.monthly_rent) * days) / rg.days);
-      if (!(amount > 0)) continue;
-      const id = await insertRow(t, "vehicle_rent_bill", {
-        number: await nextNumber(t, `SWA/${rg.month.slice(2).replace("-", "")}`, `SWA/${rg.month.slice(2).replace("-", "")}/`),
-        contract_id: c.id, period: rg.from, days, amount, due_date: req.body?.due_date || null, note: req.body?.note || null, created_by: req.user.id,
-      });
-      await audit(t, req, "vehicle_rent_bill", id, "create", { contract_id: c.id, period: rg.from, days, amount });
-      made.push({ id, amount });
+    const now = today();
+    const month = req.body?.month ? monthRange(req.body.month) : null;
+    const contracts = await t.query("select * from vehicle_contract where date_start <= $1 order by id for update", [now]);
+    const made = [], skipped = [];
+    for (const c of contracts) {
+      const start = String(c.date_start).slice(0, 10), end = c.date_end ? String(c.date_end).slice(0, 10) : null;
+      for (const cy of contractCycles(start, end, now)) {
+        if (cy.from > now || (month && (cy.from < month.from || cy.from > month.to))) continue;
+        const [has] = await t.query("select 1 from vehicle_rent_bill where contract_id = $1 and period = $2 and state = 'posted'", [c.id, cy.from]);
+        if (has) continue;
+        // jangan tertagih dua kali: tanggal periode ini sudah tercakup tagihan lain (mis. tagihan model lama per bulan kalender)
+        const [overlap] = await t.query(
+          `select b.number from vehicle_rent_bill b
+           where b.contract_id = $1 and b.state = 'posted'
+             and greatest(b.period, $4::date) <= $3::date and greatest(b.period, $4::date) + b.days - 1 >= $2::date
+           order by b.id limit 1`, [c.id, cy.from, cy.to, start]);
+        if (overlap) { skipped.push({ contract_id: c.id, dari: cy.from, sampai: cy.to, karena: overlap.number }); continue; }
+        // ke pemilik hanya sewa (biaya tetap lain tidak ditagihkan); periode terpotong selesai kontrak = sebanding hari
+        const amount = Math.round(cy.potong ? (Number(c.monthly_rent) * cy.hari) / cy.hari_penuh : Number(c.monthly_rent));
+        if (!(amount > 0)) continue;
+        const yymm = cy.from.slice(2, 4) + cy.from.slice(5, 7);
+        const id = await insertRow(t, "vehicle_rent_bill", {
+          number: await nextNumber(t, `SWA/${yymm}`, `SWA/${yymm}/`),
+          contract_id: c.id, period: cy.from, days: cy.hari, amount, due_date: cy.from, note: req.body?.note || null, created_by: req.user.id,
+        });
+        await audit(t, req, "vehicle_rent_bill", id, "create", { contract_id: c.id, period: cy.from, sampai: cy.to, days: cy.hari, amount, jatuh_tempo: cy.from });
+        made.push({ id, amount });
+      }
     }
-    return { count: made.length, total: money(made.reduce((a, x) => a + x.amount, 0)) };
+    if (skipped.length) {
+      const plates = new Map((await t.query("select c.id, v.plate_number from vehicle_contract c join vehicle v on v.id = c.vehicle_id")).map((x) => [x.id, x.plate_number]));
+      for (const x of skipped) x.plate_number = plates.get(x.contract_id);
+    }
+    return { count: made.length, total: money(made.reduce((a, x) => a + x.amount, 0)), skipped };
+  })));
+
+  // ubah jatuh tempo / catatan satu tagihan (mis. pemilik minta dibayar tanggal lain)
+  r.put("/units/rent-bills/:id", requireRole(ROLES.FINANCE), route((req) => db.tx(async (t) => {
+    const id = Number(req.params.id);
+    const [b] = await t.query("select * from vehicle_rent_bill where id = $1 for update", [id]);
+    if (!b) fail("Tagihan tidak ditemukan", 404);
+    if (b.state !== "posted") fail("Tagihan sudah dibatalkan");
+    const due = req.body?.due_date;
+    if (!DATE.test(due || "")) fail("Isi tanggal jatuh tempo");
+    await t.query("update vehicle_rent_bill set due_date = $1, note = coalesce($2, note) where id = $3", [due, req.body?.note ?? null, id]);
+    await audit(t, req, "vehicle_rent_bill", id, "due_date", { dari: b.due_date, ke: due });
+    return { ok: true };
   })));
 
   r.post("/units/rent-bills/:id/pay", requireRole(ROLES.FINANCE), route((req) => db.tx(async (t) => {

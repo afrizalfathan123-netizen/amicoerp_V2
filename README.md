@@ -117,7 +117,16 @@ lain); trip diambil otomatis dari job dengan plat yang sama (spasi / huruf besar
 - Tab **Per periode kontrak**: untung / rugi tiap unit per siklus sewa mengikuti tanggal mulai kontrak (mulai 21 Sep:
   periode 1 = 21 Sep - 20 Okt, periode 2 = 21 Okt - 20 Nov, ...), sewa penuh per periode (yang terpotong tanggal selesai
   kontrak sebanding hari; ekor 1-2 hari digabung, jadi "6 Okt - 6 Nov" = satu periode), dan naik / turunnya untung dibanding
-  periode sebelumnya. Klik baris untuk melihat trip di periode itu.
+  periode sebelumnya. Klik baris untuk melihat trip di periode itu. Periode dinomori per unit: kontrak bulanan yang bersambung
+  (16 Sep - 15 Okt, lalu 16 Okt - 15 Nov) tetap periode 1, 2, ... dan dibandingkan satu sama lain. Kontrak yang belum mulai (mis. perpanjangan
+  mulai besok) sudah tampil sebagai periode "Belum mulai"; angkanya terisi begitu periodenya berjalan.
+- Perpanjang sewa dengan harga sama: tombol **Perpanjang 1 bulan** (tab Kontrak sewa atau kotak peringatan) memundurkan tanggal
+  selesai kontrak yang sama sebulan, tidak perlu kontrak baru. Unit yang disewa terus: kosongkan tanggal selesai.
+- **Peringatan** di atas halaman Unit Sewa: kontrak yang habis <= 7 hari lagi (atau kontrak berikutnya baru mulai jauh sesudahnya),
+  kontrak yang sudah habis tapi unit masih dipakai trip, dan tagihan sewa yang jatuh tempo <= 3 hari lagi / telat.
+- **Tagihan sewa** dibuat per periode kontrak (sama dengan tab Per periode kontrak). Jatuh tempo bawaan = tanggal mulai periode
+  unit itu, jadi tiap unit beda; bisa diubah per tagihan. Periode yang tanggalnya sudah tercakup tagihan lain (mis. tagihan lama
+  per bulan kalender) tidak dibuat lagi supaya tidak dobel, dan dilaporkan.
 - Tabel per unit dan tabel trip (per unit atau "Semua trip bulan ini") bisa difilter / diurut per kolom seperti Excel; ringkasan
   dan total mengikuti yang tampil. Export Excel (sheet RINGKASAN UNIT, TRIP, HARIAN) juga persis yang tampil.
 - Kontrak bisa diubah (termasuk plat & jenis truk unit) dan dihapus selama belum punya tagihan sewa.
