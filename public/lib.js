@@ -83,11 +83,16 @@ export const get = (url) => api("GET", url);
 
 // Muat ulang yang dipicu filter / kotak cari: hanya jawaban permintaan TERAKHIR yang dipakai.
 //   const only = latest();   const rows = await only(get(url));
+// Pemanggil yang sudah digantikan ikut menunggu jawaban yang TERBARU (bukan menggantung selamanya), jadi modal yang
+// menunggu muat ulang tetap bisa menutup.
 export function latest() {
   let n = 0;
+  let last = null;
   return (promise) => {
     const my = ++n;
-    return promise.then((v) => (my === n ? v : never()), (e) => (my === n ? Promise.reject(e) : never()));
+    const mine = promise.then((v) => (my === n ? v : last), (e) => (my === n ? Promise.reject(e) : last));
+    last = mine;
+    return mine;
   };
 }
 
@@ -218,7 +223,7 @@ export function bindRows(root = view()) {
   root._rowsBound = true;
   root.addEventListener("click", (e) => {
     const tr = e.target.closest("tr[data-href]");
-    if (!tr || !root.contains(tr) || e.target.closest("a,button,input,select,label")) return;
+    if (!tr || !root.contains(tr) || e.target.closest("a,button,input,select,label,[data-noclick]")) return;
     location.hash = tr.dataset.href;
   });
 }
@@ -294,6 +299,7 @@ const ICON = {
   rekap: `<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>`,
   ar: `<path d="M4 7h16v12H4z"/><path d="M4 11h16M12 14.5v3M10.5 16h3"/><path d="M8 7V5h8v2"/>`,
   ap: `<path d="M4 7h16v12H4z"/><path d="M4 11h16M10.5 16h3"/><path d="M8 7V5h8v2"/>`,
+  "cek-harga": `<path d="M3 12V4h8l10 10-8 8z"/><circle cx="7.5" cy="8.5" r="1.4"/><path d="m11 14 2 2 4-4"/>`,
   invoices: `<path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5M9 12h7M9 16h5"/>`,
   requests: `<path d="M21 3 10 14"/><path d="M21 3l-7 18-4-7-7-4z"/>`,
   kas: `<path d="M3 9l9-5 9 5"/><path d="M5 9v9M9.5 9v9M14.5 9v9M19 9v9M3 20h18"/>`,

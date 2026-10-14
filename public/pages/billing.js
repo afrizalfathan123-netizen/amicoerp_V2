@@ -93,6 +93,7 @@ async function renderBilling(side) {
         <li><b>Belum diajukan</b> = belum masuk pengajuan. <b>Diajukan, belum ditransfer</b> = pengajuan ada (menunggu persetujuan / transfer).
           <b>Belum bisa</b> = syaratnya belum lengkap (kode tugas atau gate out).</li></ul>`}
     </details>
+    <div id="bPriceWarn"></div>
     <div class="tiles" id="bTiles">${skelTiles()}</div>
     <div class="panel">
       <div class="tabs" id="bTabs"></div>
@@ -108,6 +109,13 @@ async function renderBilling(side) {
   el("legend").addEventListener("toggle", () => save());
   const save = () => sessionStorage.setItem(key, JSON.stringify({ group, paste, legendClosed: !el("legend").open }));
 
+  // sebelum menagih: ingatkan kalau ada job yang selling-nya beda dari price book (dimuat terpisah, tidak menahan halaman)
+  if (side === "SALE") get("/price-check").then((m) => {
+    if (!m.length || !el("bPriceWarn")) return;
+    el("bPriceWarn").innerHTML = `<div class="note-box warn-box"><b>${rp(m.length)} job harga jualnya beda dari price book</b>
+      (kalau disamakan, total selling berubah ${rp(m.filter((j) => !j.blocked).reduce((a, j) => a + j.selisih, 0))}).
+      Periksa di <a href="#/cek-harga">Cek Harga Jual</a> sebelum membuat invoice.</div>`;
+  }).catch(() => {});
   const all = (await get(`/billing?side=${side}`)).map((j) => analyze(j, side));
   const otherPhase = side === "PURCHASE";
   const columns = [

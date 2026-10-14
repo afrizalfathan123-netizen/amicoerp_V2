@@ -77,6 +77,19 @@ importer), dan KURANG TRANSFER. Aturan ada di kepala `lib/import-jobreg.js`. Yan
 - Ringan untuk data banyak: tabel panjang ditampilkan per halaman (100 baris, bisa diubah 50 / 100 / 250 / 500) tetapi filter,
   total, centang, dan export tetap menghitung semua baris; saat memuat tampil kerangka abu-abu (skeleton) dan garis proses di
   atas layar; jawaban server dikompresi.
+- Menu **Cek Harga Jual**: job yang selling-nya beda dari price book pada tanggal job (mis. harga baru berlaku per 15 Oktober,
+  tetapi job setelah tanggal itu telanjur dibuat dengan harga lama). Finance mencatat harga + "Berlaku dari" di Master Data >
+  Price Book, lalu mencentang job dan menyamakannya sekaligus (wajib alasan, tercatat di riwayat job). Job yang sudah ditagih
+  lebih besar dari harga baru ditandai "Tidak bisa" (invoicenya harus dikoreksi dulu). AR Customer memberi peringatan kalau ada yang beda.
+- Edit job oleh dua orang bersamaan: simpan dari form yang sudah basi ditolak, supaya perubahan orang lain (mis. top-up cost) tidak tertimpa.
+- Daftar job: kolom **Gate out** / **Gate in** bisa diisi langsung di tabel (tombol "Kini" = jam sekarang), tanpa membuka Tracker.
+  Di bawahnya tampil durasi trip dan SLA rute ("jalan 36 jam / SLA 48", merah kalau lewat). Gate in harus setelah gate out;
+  tanggal di masa depan atau jauh sebelum tanggal job ditolak (salah ketik tahun).
+- Semua kotak tanggal / tanggal-jam menerima **tempelan gaya Excel / WhatsApp** (`14/10/2026 03:32`, hari/bulan/tahun jam:menit);
+  di kolom gate langsung tersimpan.
+- Form **Job baru**: kotak **Tempel dari WhatsApp**. Tempel teks unit dari chat (`Tanggal : ...`, `Rute : JST-SOC`, `Nama / Driver`,
+  `Nopol`, `No HP`, `Kode Tugas`) dan form langsung terisi; plat yang ada di Master Kendaraan ikut mengisi jenis truk, vendor, dan
+  rekeningnya. Lokasi / customer yang tidak ada di master tidak diisi asal, hanya diberi catatan.
 - Form Pengajuan / Invoice baru: **Tempel daftar job** (atau tempel beberapa nomor langsung di kotak cari). Job di daftar itu saja
   yang tampil, urut sesuai tempelan dan langsung dicentang; nomor yang sudah diajukan penuh / tidak ketemu disebutkan.
 - Daftar job: filter & urut per kolom seperti Excel (klik ▾ di header), dan **Tempel daftar** no job atau kode tugas

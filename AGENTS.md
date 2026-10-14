@@ -89,6 +89,7 @@ routes/                   satu file per area, masing-masing export default fungs
                           /titipan /bank-balance /tracker + export Excel
   sj.js                   surat jalan: tracking, input cepat, pengiriman SJ (SJD), export Job List, impor Job List v1
   units.js                unit sewa: kontrak sewa, untung rugi per unit / per trip, tagihan sewa bulanan (SWA)
+  pricecheck.js           cek harga jual: job yang selling-nya beda dari price book pada tanggal job + samakan sekaligus
 public/
   index.html, styles.css  kerangka + tema (krem #FEF3E2, amber #F4AE52, rust #D4621A, espresso #2A1A0E, olive #6B8E3D)
   app.js                  NAV (menu per grup), ROUTES [regex, modul, fungsi, key menu], router, login, menu user
@@ -96,6 +97,7 @@ public/
                           label (STAGE_LABEL, PHASE_LABEL, phaseLabel, SCHEME_*), cache master (state.cache), icon(),
                           latest(), skeleton()/skelTable()/skelTiles(), pagedTable() + pager
   xlfilter.js             xlTable(): tabel dengan filter & urut per kolom ala Excel, centang baris, digambar per halaman
+  wa-paste.js             parseWaJob(): baca teks WhatsApp "Label : nilai" jadi isian form Job baru (fungsi murni, ada tesnya)
   fox.js                  maskot rubah 8-bit di topbar (canvas, bisa dimatikan dari menu user)
   pages/*.js              satu modul per halaman, export renderXxx() dipanggil router
 db/migrations/NNN_*.sql   skema + view, berurutan, maju terus (lihat bagian 6)
@@ -257,10 +259,11 @@ npm test
 ```
 | File | Isi |
 |---|---|
-| `test/run-all.js` | alur lengkap lewat HTTP per role di PGlite memori (26 langkah, termasuk unit sewa + per periode kontrak, tempel daftar di form pengajuan, dan kompresi jawaban): job, invoice, pengajuan, bayar, transfer malam, 50/50, selisih tanpa tujuan, SJ, reroute, AR/AP, tempel daftar, export |
+| `test/run-all.js` | alur lengkap lewat HTTP per role di PGlite memori (30 langkah, termasuk unit sewa + per periode kontrak, gate dari daftar job, tanggal job salah ketik, dua orang mengedit job yang sama, cek harga jual, tempel daftar di form pengajuan, dan kompresi jawaban): job, invoice, pengajuan, bayar, transfer malam, 50/50, selisih tanpa tujuan, SJ, reroute, AR/AP, tempel daftar, export |
 | `test/import.test.js` | impor dari tiruan database v1 (12) |
 | `test/jobreg.test.js` | impor JOB REGISTRATION dari workbook tiruan (15) |
 | `test/joblist-v1.test.js` | impor Job List v1 (5) |
+| `test/wa-paste.test.js` | pembaca teks WhatsApp untuk form Job baru + tempel tanggal-jam (6) |
 
 Aturan:
 - Setiap aturan bisnis baru / bug yang diperbaiki **wajib** punya langkah tes (`await step("...", async () => {...})`),

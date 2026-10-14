@@ -23,16 +23,21 @@ if (!file || !fs.existsSync(file)) {
   console.error('Pakai: npm run import:jobreg -- "<file JOB REGISTRATION.xlsx>" [--mulai AMC/2607/0001] [--reset]');
   process.exit(1);
 }
+// tujuan ditampilkan SEBELUM konfirmasi, supaya jelas database mana yang akan diganti
+const online = CONFIG.databaseUrl && !CONFIG.dataDirArg;
+console.log(`Tujuan: ${online ? `PostgreSQL ONLINE (${new URL(CONFIG.databaseUrl).hostname})` : CONFIG.dataDir}`);
 if (reset) {
+  console.log("Yang DIGANTI isi Excel: job, invoice, pengajuan, pembayaran, partner, lokasi, rekening.");
+  console.log("Yang TETAP: unit & kontrak sewa, tagihan & pembayaran sewa, SLA rute, price book, user, pengaturan.");
+  if (online) console.log("Selama impor berjalan (bisa 15-30 menit) web ERP tidak bisa dipakai. Kalau gagal di tengah, semuanya batal dan data kembali seperti semula.");
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  const answer = await new Promise((r) => rl.question('Semua job, dokumen, pembayaran, dan master di ERP v2 akan DIHAPUS. Ketik "HAPUS": ', r));
+  const answer = await new Promise((r) => rl.question('Ketik "HAPUS" untuk lanjut: ', r));
   rl.close();
   if (answer.trim() !== "HAPUS") process.exit(0);
 }
 
 const target = await openDb();
 await migrate(target, { log: () => {} });
-console.log(`Tujuan: ${CONFIG.databaseUrl ? "PostgreSQL (DATABASE_URL)" : CONFIG.dataDir}`);
 try {
   if (args.includes("--perbandingan")) {
     const info = await saveJobRegSnapshot({ file, target });

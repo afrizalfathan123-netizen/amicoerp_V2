@@ -235,6 +235,57 @@ try {
     assert.equal((await viewer.call("GET", `/jobs/${J1.id}`)).job.state, "done");
   });
 
+  await step("tanggal job salah ketik (tahun 2926, tanggal tidak ada) ditolak saat buat & ubah job", async () => {
+    const base = { customer_id: id.LINTAS, pol_id: id.JRT, pod_id: id.MES, trip_type: "ROUND_TRIP", truck_type: "CDDL" };
+    assert.match(await ops.call("POST", "/jobs", { ...base, job_date: "2926-07-31" }, 400), /terlalu jauh di depan/);
+    assert.match(await ops.call("POST", "/jobs", { ...base, job_date: "1926-07-31" }, 400), /terlalu lama/);
+    assert.match(await ops.call("POST", "/jobs", { ...base, job_date: "2026-02-31" }, 400), /tidak terbaca/);
+    assert.match(await ops.call("PUT", `/jobs/${J1.id}`, { job_date: "2926-09-12" }, 400), /terlalu jauh di depan/);
+    assert.equal((await viewer.call("GET", `/jobs/${J1.id}`)).job.job_number, J1.job_number);
+  });
+
+  await step("dua orang mengedit job yang sama: form yang sudah basi ditolak, isi gate tidak dianggap bentrok", async () => {
+    const load = async (c) => (await c.call("GET", `/jobs/${J1.id}`)).job;
+    const a = await load(ops), b = await load(fin);            // dua orang membuka form edit bersamaan
+    assert.equal(a.version, b.version);
+    await fin.call("PUT", `/jobs/${J1.id}`, { driver2_name: "Kernet Baru", expected_version: b.version });
+    // orang pertama menyimpan form lama (driver2 masih kosong): ditolak, perubahan orang kedua tidak tertimpa
+    assert.match(await ops.call("PUT", `/jobs/${J1.id}`, { driver2_name: "", note: "catatan", expected_version: a.version }, 409), /sudah diubah oleh fin/);
+    let now = await load(ops);
+    assert.deepEqual([now.driver2_name, now.note], ["Kernet Baru", null]);
+    // gate / SJ bukan bagian form: mengisinya tidak membuat form orang lain jadi basi
+    await ops.call("PUT", `/jobs/${J1.id}/trip`, { sj_number: "SJ-001" });
+    assert.equal((await load(ops)).version, now.version);
+    // top-up cost oleh orang lain = bentrok (form lama akan mengembalikan cost lama)
+    await fin.call("POST", `/jobs/${J1.id}/topup`, { amount: 1000, reason: "tes bentrok" });
+    assert.match(await ops.call("PUT", `/jobs/${J1.id}`, { note: "x", expected_version: now.version }, 409), /sudah diubah/);
+    now = await load(ops);
+    await ops.call("PUT", `/jobs/${J1.id}`, { driver2_name: "", expected_version: now.version });
+    assert.equal((await load(ops)).driver2_name, null);
+  });
+
+  await step("gate diisi dari daftar job: satu per satu, dicek terhadap yang tersimpan, salah ketik tahun ditolak, durasi & SLA di daftar", async () => {
+    const row = async () => (await viewer.call("POST", "/jobs/query", { numbers: [J1.job_number] }))[0];
+    let r = await row();
+    assert.deepEqual([r.durasi_jam, r.sla_hours, r.lewat_sla, r.stage !== "JALAN"], [108, 120, false, true]);
+    assert.match(await viewer.call("PUT", `/jobs/${J1.id}/trip`, { gate_in_at: null }, 403), /akses/);
+    // hanya gate in yang dikirim: tetap dibandingkan dengan gate out yang sudah tersimpan
+    assert.match(await ops.call("PUT", `/jobs/${J1.id}/trip`, { gate_in_at: "2026-09-13T08:00:00+07:00" }, 400), /sebelum gate out/);
+    assert.match(await ops.call("PUT", `/jobs/${J1.id}/trip`, { gate_in_at: "2926-09-18T20:00:00+07:00" }, 400), /masa depan/);
+    assert.match(await ops.call("PUT", `/jobs/${J1.id}/trip`, { gate_out_at: "2025-09-14T08:00:00+07:00" }, 400), /jauh sebelum tanggal job/);
+    assert.match(await ops.call("PUT", `/jobs/${J1.id}/trip`, { gate_out_at: null }, 400), /Hapus gate in dulu/);
+    // gate in dihapus -> trip jalan lagi; diisi ulang -> selesai. Isian SJ saja tidak mengubah status trip.
+    await ops.call("PUT", `/jobs/${J1.id}/trip`, { gate_in_at: null });
+    r = await row();
+    assert.deepEqual([r.state, r.stage, r.gate_in_at], ["confirmed", "JALAN", null]);
+    assert.ok(r.durasi_jam > 108 && r.lewat_sla === true);          // masih jalan sejak 14 Sep -> sudah lewat SLA 120 jam
+    await ops.call("PUT", `/jobs/${J1.id}/trip`, { sj_number: "SJ-001" });
+    assert.equal((await row()).state, "confirmed");
+    await ops.call("PUT", `/jobs/${J1.id}/trip`, { gate_in_at: "2026-09-18T20:00:00+07:00" });
+    r = await row();
+    assert.deepEqual([r.state, r.durasi_jam, r.lewat_sla], ["done", 108, false]);
+  });
+
   let J50, REQ50;
   await step("skema 50/50 customer (dari setting customer), vendor tetap 70/30", async () => {
     id.CINTA = (await fin.call("POST", "/partners", { code: "CINTA", name: "CINTA", is_customer: true, payment_scheme: "50_50" })).id;
@@ -478,6 +529,52 @@ try {
       const buf = await viewer.call("GET", `/export/${f}.xlsx`);
       assert.ok(buf.byteLength > 1000, f);
     }
+  });
+
+  await step("cek harga jual: harga baru berlaku per tanggal, job yang telanjur dibuat disamakan sekaligus", async () => {
+    await admin.call("PUT", "/settings", { require_gate_for_billing: false });
+    const job = (job_date) => ops.call("POST", "/jobs", { job_date, customer_id: id.KOTA, pol_id: id.JRT, pod_id: id.SBY, trip_type: "ONE_WAY", truck_type: "CDDL", selling_mode: "PRICE_BOOK" });
+    const A = await job("2026-10-08"), B = await job("2026-10-10"), C = await job("2026-10-11");     // semua masih harga lama 8.500.000
+    const sellingOf = async (j) => (await viewer.call("GET", `/jobs/${j.id}`)).balance.selling;
+    assert.equal(await sellingOf(C), 8500000);
+    assert.equal((await viewer.call("GET", `/price-check?customer_id=${id.KOTA}`)).length, 0);
+    // finance baru mencatat: mulai 10 Oktober harga jadi 8.000.000. Job lama tidak berubah sendiri.
+    const p1 = (await fin.call("POST", "/pricelist", { pol_id: id.JRT, pod_id: id.SBY, truck_type: "CDDL", trip_type: "ONE_WAY", selling: 8000000, effective_from: "2026-10-10" })).id;
+    assert.equal(await sellingOf(C), 8500000);
+    let beda = await viewer.call("GET", `/price-check?customer_id=${id.KOTA}`);
+    assert.deepEqual(beda.map((x) => x.job_number).sort(), [B.job_number, C.job_number].sort());     // job 8 Okt (sebelum tanggal berlaku) tidak ikut
+    assert.deepEqual([beda[0].selling, beda[0].book, beda[0].selisih, beda[0].blocked], [8500000, 8000000, -500000, false]);
+    // C sudah ditagih DP 70% dari harga lama (5.950.000): tetap bisa, karena masih di bawah harga baru
+    const dp = await fin.call("POST", "/moves", { move_type: "out_invoice", phase: "DP", partner_id: id.KOTA, post: true, lines: [{ job_id: C.id, amount: 5950000 }] });
+    assert.equal(dp.state, "posted");
+    // hanya FINANCE / ADMIN, wajib alasan
+    assert.match(await ops.call("POST", "/price-check/apply", { job_ids: [B.id], reason: "x" }, 403), /akses/);
+    assert.match(await fin.call("POST", "/price-check/apply", { job_ids: [B.id] }, 400), /Alasan/);
+    // job yang dibuat saat harganya belum diketahui (selling 0) ikut tampil dan terisi dari price book
+    const Z = await ops.call("POST", "/jobs", { job_date: "2026-10-12", customer_id: id.KOTA, pol_id: id.JRT, pod_id: id.SBY, trip_type: "ONE_WAY", truck_type: "CDDL", selling_mode: "ZERO" });
+    const z = (await viewer.call("GET", `/price-check?customer_id=${id.KOTA}`)).find((x) => x.job_id === Z.id);
+    assert.deepEqual([z.selling, z.book, z.selling_mode], [0, 8000000, "ZERO"]);
+    await fin.call("POST", "/price-check/apply", { job_ids: [Z.id], reason: "harga sudah keluar" });
+    assert.deepEqual([await sellingOf(Z), (await viewer.call("GET", `/jobs/${Z.id}`)).job.selling_mode], [8000000, "PRICE_BOOK"]);
+    let r = await fin.call("POST", "/price-check/apply", { job_ids: [A.id, B.id, C.id], reason: "harga baru per 10 Oktober" });
+    assert.deepEqual([r.updated, r.skipped.length, r.unchanged], [2, 0, 1]);
+    assert.deepEqual([await sellingOf(A), await sellingOf(B), await sellingOf(C)], [8500000, 8000000, 8000000]);
+    assert.equal((await viewer.call("GET", `/price-check?customer_id=${id.KOTA}`)).length, 0);
+    assert.ok((await admin.call("GET", `/audit?entity=job&entity_id=${B.id}`)).some((a) => a.action === "reprice" && a.detail.dari === 8500000 && a.detail.ke === 8000000));
+    // sisa tagihan C menyesuaikan: harga baru - DP yang sudah ditagih
+    const sisa = (await fin.call("GET", `/moves/eligible?move_type=out_invoice&phase=SETTLEMENT&partner_id=${id.KOTA}&job_ids=${C.id}`))[0];
+    assert.equal(sisa.suggested, 8000000 - 5950000);
+    // harga turun di bawah yang sudah ditagih: ditandai tidak bisa dan dilewati, bukan dipaksa
+    const p2 = (await fin.call("POST", "/pricelist", { customer_id: id.KOTA, pol_id: id.JRT, pod_id: id.SBY, truck_type: "CDDL", trip_type: "ONE_WAY", selling: 5000000, effective_from: "2026-10-11" })).id;
+    beda = await viewer.call("GET", `/price-check?customer_id=${id.KOTA}`);
+    // C (sudah ditagih 5.950.000) tidak bisa turun ke 5.000.000; Z (belum ditagih) bisa
+    assert.deepEqual(beda.map((x) => [x.job_number, x.blocked, x.khusus]).sort(), [[C.job_number, true, true], [Z.job_number, false, true]].sort());
+    r = await fin.call("POST", "/price-check/apply", { job_ids: [C.id], reason: "coba" });
+    assert.deepEqual([r.updated, r.skipped.length], [0, 1]);
+    assert.equal(await sellingOf(C), 8000000);
+    // rapikan supaya langkah lain tidak terpengaruh
+    for (const pid of [p1, p2]) await fin.call("PUT", `/pricelist/${pid}`, { active: false });
+    assert.equal((await viewer.call("GET", `/price-check?customer_id=${id.KOTA}`)).length, 3);       // B, C, Z sekarang beda lagi dari harga lama (wajar)
   });
 
   await step("unit sewa per periode kontrak: siklus ikut tanggal mulai kontrak, sewa per siklus, untung dibanding periode sebelumnya", async () => {

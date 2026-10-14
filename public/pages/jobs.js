@@ -9,6 +9,7 @@ import { gateModal, positionModal } from "./tracker.js";
 import { ledgerTable, shortPanel } from "./reports.js";
 import { unassignedTable } from "./unassigned.js";
 import { xlTable } from "../xlfilter.js";
+import { parseWaJob } from "../wa-paste.js";
 
 const SCOPE = { INTERCITY: "Antar kota", INNERCITY: "Dalam kota" };
 const TRIP = { ONE_WAY: "One way", ROUND_TRIP: "PP / round trip" };
@@ -26,6 +27,9 @@ const JOB_COLUMNS = [
   { key: "job_number", label: "No job", value: (j) => j.job_number },
   { key: "do_number", label: "Kode tugas", value: (j) => j.do_number },
   { key: "job_date", label: "Tgl", value: (j) => tgl(j.job_date) },
+  // filter per tanggal (dan "(Kosong)" = belum diisi), urut per jam
+  { key: "gate_out", label: "Gate out", value: (j) => j.gate_out_at || "", text: (j) => dtLocal(j.gate_out_at).slice(0, 10) },
+  { key: "gate_in", label: "Gate in", value: (j) => j.gate_in_at || "", text: (j) => dtLocal(j.gate_in_at).slice(0, 10) },
   { key: "customer", label: "Customer", value: (j) => j.customer },
   { key: "route", label: "Rute", value: routeOf },
   { key: "truck_type", label: "Truk", value: (j) => j.truck_type },
@@ -38,14 +42,31 @@ const JOB_COLUMNS = [
   { key: "utang", label: "Utang", num: true, value: (j) => j.cost - j.paid },
   { key: "stage", label: "Status", value: (j) => STAGE_LABEL[j.stage] || j.stage },
 ];
-const jobRow = (j) => `<tr class="click" data-href="#/jobs/${j.id}">
-  <td><b>${esc(j.job_number)}</b></td><td>${esc(j.do_number || "")}</td><td class="nowrap">${tgl(j.job_date)}</td><td>${esc(j.customer)}</td>
+// Gate out / gate in diisi langsung di daftar job (disimpan saat pindah dari kotaknya). Gate out = unit selesai muat & berangkat, gate in = sampai.
+const gateNote = (j) => {
+  if (!j.gate_out_at) return "";
+  const dur = j.durasi_jam == null ? "" : `${rp(j.durasi_jam)} jam`;
+  const txt = j.gate_in_at ? `selesai ${dur}` : `jalan ${dur}`;
+  return `<span class="${j.lewat_sla ? "warn-text" : "muted"}">${esc(txt)}${j.sla_hours ? ` / SLA ${rp(j.sla_hours)}` : ""}${j.lewat_sla ? " · lewat SLA" : ""}</span>`;
+};
+const gateCell = (j, field) => {
+  const v = dtLocal(j[field]);
+  if (!canJob() || j.state === "cancelled") return `<td class="nowrap">${jam(j[field])}</td>`;
+  const blocked = field === "gate_in_at" && !j.gate_out_at;
+  return `<td class="gate-cell" data-noclick><span class="gate-box"><input type="datetime-local" data-gate="${field}" value="${v}" ${blocked ? "disabled" : ""}
+      title="${field === "gate_out_at" ? "Gate out: unit selesai muat dan berangkat" : blocked ? "Isi gate out dulu" : "Gate in: unit sudah sampai"}">
+    <button type="button" class="small" data-gate-now="${field}" title="Isi dengan jam sekarang" ${v || blocked ? "hidden" : ""}>Kini</button></span>
+    ${field === "gate_in_at" ? `<div class="gate-note">${gateNote(j)}</div>` : ""}</td>`;
+};
+const stageCell = (j) => `${stageBadge(j.stage)}${j.sj_late ? `<br><span class="badge warn" title="${esc(SJ_LATE_LABEL[j.sj_late])}">SJ terlambat</span>` : ""}${shortBadge(j)}`;
+const jobRow = (j) => `<tr class="click" data-href="#/jobs/${j.id}" data-job="${j.id}">
+  <td><b>${esc(j.job_number)}</b></td><td>${esc(j.do_number || "")}</td><td class="nowrap">${tgl(j.job_date)}</td>${gateCell(j, "gate_out_at")}${gateCell(j, "gate_in_at")}<td>${esc(j.customer)}</td>
   <td>${esc(routeOf(j))}${j.delivery_scope === "INNERCITY" ? `<br><span class="muted">dalam kota${j.rit_number ? ` rit ${j.rit_number}` : ""}</span>` : ""}</td>
   <td>${esc(j.truck_type)}</td><td class="nowrap">${esc(j.plate_number || "")}</td><td>${esc(j.driver1_name || "")}</td>
   <td>${SCHEME_SHORT[j.customer_scheme]}${j.vendor_scheme !== j.customer_scheme ? `<br><span class="muted">vendor ${SCHEME_SHORT[j.vendor_scheme]}</span>` : ""}</td>
   <td class="num">${rp(j.selling)}</td><td class="num">${rp(j.cost)}</td>
   <td class="num">${rp(j.selling - j.received)}</td><td class="num">${rp(j.cost - j.paid)}</td>
-  <td>${stageBadge(j.stage)}${j.sj_late ? `<br><span class="badge warn" title="${esc(SJ_LATE_LABEL[j.sj_late])}">SJ terlambat</span>` : ""}${shortBadge(j)}</td></tr>`;
+  <td class="c-stage">${stageCell(j)}</td></tr>`;
 const PASTE_BY = { job: "No job", do: "Kode tugas" };
 const norm = (v) => String(v || "").replace(/\s/g, "").toUpperCase();
 const LIMIT = 5000;
@@ -108,6 +129,61 @@ export async function renderJobs() {
     }));
   };
 
+  // ---- gate out / gate in langsung di tabel: simpan saat keluar dari kotak (bukan tiap ketikan, supaya tahun setengah jadi tidak tersimpan)
+  let current = [];
+  const saveGate = async (input) => {
+    const tr = input.closest("tr[data-job]");
+    const j = current.find((x) => x.id === Number(tr?.dataset.job));
+    if (!j) return;
+    const field = input.dataset.gate;
+    const label = field === "gate_out_at" ? "gate out" : "gate in";
+    if (input._saving) return;                          // tempel lalu langsung pindah kotak: jangan simpan dua kali
+    // tanggal / jam baru terisi sebagian (browser memberi nilai kosong): jangan dianggap "hapus"
+    if (input.validity?.badInput) {
+      input.value = dtLocal(j[field]);
+      return toast(`${j.job_number}: ${label} belum lengkap (tanggal dan jam), tidak disimpan`, true);
+    }
+    if (input.value === dtLocal(j[field])) return;
+    input._saving = true;
+    try {
+      // mengosongkan gate yang sudah terisi = menghapus: minta kepastian dulu
+      if (!input.value && !window.confirm(`Hapus ${label} ${j.job_number} (${jam(j[field])})?`)) {
+        input.value = dtLocal(j[field]);
+        return;
+      }
+      await api("PUT", `/jobs/${j.id}/trip`, { [field]: fromDtLocal(input.value) });
+      // baris itu saja yang diperbarui (status, durasi, SLA), tabel tidak digambar ulang supaya bisa lanjut ke kotak berikutnya
+      const [fresh] = await api("POST", "/jobs/query", { numbers: [j.job_number], by: "job" });
+      if (fresh) Object.assign(j, fresh);
+      toast(`${j.job_number}: ${label} ${input.value ? "dicatat" : "dihapus"}`);
+    } catch (err) {
+      toast(err.message, true);
+    } finally {
+      input._saving = false;
+    }
+    if (!tr.isConnected) return;
+    tr.querySelector(".c-stage").innerHTML = stageCell(j);
+    tr.querySelector(".gate-note").innerHTML = gateNote(j);
+    tr.querySelectorAll("[data-gate]").forEach((i) => {
+      if (i !== document.activeElement || i === input) i.value = dtLocal(j[i.dataset.gate]);
+      i.disabled = i.dataset.gate === "gate_in_at" && !j.gate_out_at;
+      i.title = i.dataset.gate === "gate_out_at" ? "Gate out: unit selesai muat dan berangkat" : i.disabled ? "Isi gate out dulu" : "Gate in: unit sudah sampai";
+      tr.querySelector(`[data-gate-now="${i.dataset.gate}"]`).hidden = !!i.value || i.disabled;
+    });
+    tiles().catch(() => {});
+  };
+  el("jobTable").addEventListener("focusout", (e) => { if (e.target.matches?.("[data-gate]")) saveGate(e.target); });
+  el("jobTable").addEventListener("keydown", (e) => { if (e.key === "Enter" && e.target.matches?.("[data-gate]")) e.target.blur(); });
+  // tempel "14/10/2026 03:32" (lihat app.js): nilainya sudah lengkap, langsung simpan
+  el("jobTable").addEventListener("amico:pasted", (e) => { if (e.target.matches?.("[data-gate]")) saveGate(e.target); });
+  el("jobTable").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-gate-now]");
+    if (!b) return;
+    const input = b.parentElement.querySelector("[data-gate]");
+    input.value = dtLocal(new Date().toISOString());
+    saveGate(input);
+  });
+
   const only = latest();   // mengetik cepat di kotak cari: hanya jawaban terakhir yang dipakai
   const load = async () => {
     const flt = Object.fromEntries(topIds.map((k) => [k.slice(1).toLowerCase(), el(k).value]));
@@ -115,6 +191,7 @@ export async function renderJobs() {
     const rows = await only(paste
       ? api("POST", "/jobs/query", { numbers: paste.numbers, by: paste.by, limit: LIMIT })
       : get(`/jobs?${new URLSearchParams({ ...flt, limit: LIMIT })}`));
+    current = rows;
     posMap = pos();
     showPaste(rows);
     grid.setRows(rows);
@@ -226,6 +303,12 @@ export function jobForm(job = null, balance = null) {
     title: job ? `Edit ${job.job_number}` : "Job baru",
     wide: true,
     body: `
+      ${job ? "" : `<div class="wa-paste">
+        <div class="wa-head"><b>Tempel dari WhatsApp</b>
+          <span class="muted">Tempel teks unit dari chat (Tanggal, Rute, Nama / Driver, Nopol, No HP, Kode Tugas): form langsung terisi. Customer, rekening, dan harga tetap Anda isi.</span></div>
+        <textarea id="waText" rows="4" placeholder="Tanggal : 12/10/2026&#10;Rute : JST-SOC&#10;Nama : Ananda&#10;Nopol : H 1234 OC&#10;No hp : 0812xxxxxxxx&#10;Kode Tugas : ..."></textarea>
+        <div class="wa-foot"><button type="button" class="small" id="waApply">Isi form dari teks</button><span id="waInfo"></span></div>
+      </div>`}
       <h4>Order</h4>
       <div class="form-grid">
         <label>Tanggal<input type="date" name="job_date" value="${tgl(j.job_date)}" required></label>
@@ -327,6 +410,41 @@ export function jobForm(job = null, balance = null) {
       });
       fillBanks();
       lookup();
+
+      // tempel teks WhatsApp -> isi form (hanya job baru). Yang tidak cocok dengan master tidak diisi, hanya diberi catatan.
+      const wa = form.querySelector("#waText");
+      if (wa) {
+        const info = form.querySelector("#waInfo");
+        const applyWa = () => {
+          const r = parseWaJob(wa.value, { locations: c.locations, vehicles: c.vehicles, customers: customers() });
+          form.querySelectorAll(".wa-filled").forEach((x) => x.classList.remove("wa-filled"));
+          if (!r.hasData) {
+            info.innerHTML = wa.value.trim() ? `<span class="warn-text">Belum ada yang terbaca. Formatnya "Label : isi" per baris, mis. "Nopol : B 1234 ABC".</span>` : "";
+            return;
+          }
+          for (const k of r.clear) if (E[k]) E[k].value = "";
+          for (const [k, v] of Object.entries(r.fields)) {
+            if (!E[k]) continue;
+            E[k].value = v;
+            E[k].classList.add("wa-filled");
+          }
+          // plat yang ada di Master Kendaraan: jenis truk & vendor pemilik ikut terisi (kalau teks tidak menyebut jenis truk)
+          if (r.vehicle) {
+            if (!r.fields.truck_type) { E.truck_type.value = r.vehicle.truck_type; E.truck_type.classList.add("wa-filled"); }
+            if (r.vehicle.owner_partner_id && !E.vendor_id.value) { E.vendor_id.value = r.vehicle.owner_partner_id; E.vendor_id.classList.add("wa-filled"); fillBanks(); }
+          }
+          // skema hanya disetel ulang kalau customer / vendor ikut berubah, supaya pilihan skema yang sudah dibuat tidak tertimpa
+          if (r.fields.customer_id || form.querySelector('[name="vendor_id"].wa-filled')) applySchemes();
+          lookup();
+          const missing = [["customer_id", "customer"], ["pol_id", "POL"], ["pod_id", "POD"]].filter(([k]) => !E[k].value).map(([, l]) => l);
+          info.innerHTML = `<span class="ok-text">Terisi: ${esc(r.read.join(", "))}.</span>
+            ${missing.length ? ` Masih perlu dipilih: <b>${esc(missing.join(", "))}</b>.` : ""}
+            ${r.warn.map((w) => `<div class="warn-text">${esc(w)}</div>`).join("")}
+            ${r.unknown.length ? `<div class="muted">Tidak dipakai: ${esc(r.unknown.join(" | "))}</div>` : ""}`;
+        };
+        form.querySelector("#waApply").onclick = applyWa;
+        wa.addEventListener("paste", () => setTimeout(applyWa, 0));   // tempel = langsung terisi
+      }
     },
     onSubmit: async (d) => {
       for (const k of ["selling", "cost", "selling_after_tax"]) d[k] = num(d[k]);
@@ -337,6 +455,7 @@ export function jobForm(job = null, balance = null) {
       if (job && !d.cost && purchase && !rerouted) d.cost = purchase.amount;
       if (!d.reason) delete d.reason;
       if (job) {
+        d.expected_version = job.version;     // ditolak server kalau job sudah diubah orang lain sejak form dibuka
         await api("PUT", `/jobs/${job.id}`, d);
         toast("Job disimpan");
         window.dispatchEvent(new Event("hashchange"));

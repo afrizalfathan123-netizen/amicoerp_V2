@@ -92,6 +92,11 @@ export async function renderMaster(tab) {
       if (row) await api("PUT", `/${cfg.api}/${row.id}`, d);
       else await api("POST", `/${cfg.api}`, d);
       toast("Tersimpan");
+      if (cfg.api === "pricelist") {
+        // job yang sudah telanjur dibuat tidak berubah sendiri: tunjukkan berapa yang sekarang beda
+        const beda = await api("GET", "/price-check").catch(() => []);
+        if (beda.length) toast(`Tersimpan. ${beda.length} job selling-nya beda dari price book, buka menu Cek Harga Jual untuk menyamakan.`);
+      }
       window.dispatchEvent(new Event("hashchange"));
     },
   });

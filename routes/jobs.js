@@ -1,7 +1,8 @@
 // Job: buat / ubah (termasuk ganti rute), baris order (selling, cost, calo, tol, ...), top-up, perjalanan (gate, posisi, SJ).
 import express from "express";
+import crypto from "node:crypto";
 import { requireRole, ROLES } from "../lib/auth.js";
-import { route, fail, money, rupiah, pick, insertRow, updateRow, nextNumber, audit } from "../lib/util.js";
+import { route, fail, money, rupiah, pick, insertRow, updateRow, nextNumber, audit, today } from "../lib/util.js";
 import { findPrice } from "./master.js";
 
 const KINDS = ["TRUCKING", "CALO", "TOL", "PARKIR", "BONGKAR", "LAINNYA"];
@@ -10,6 +11,27 @@ const HEADER_FIELDS = ["job_date", "customer_id", "vendor_id", "pol_id", "pod_id
   "do_number", "customer_scheme", "vendor_scheme", "selling_after_tax", "note"];
 const TRIP_FIELDS = ["gate_out_at", "gate_in_at", "sj_number", "sj_resi_received_at", "sj_received_at", "sj_resi_number",
   "sj_delivered_at", "sj_delivered_resi_number"];
+
+// Tanggal job menentukan nomor job (AMC/YYMM/...) dan semua laporan per periode: salah ketik tahun ("2926") ditolak di sini.
+function checkJobDate(v) {
+  const s = String(v || "").slice(0, 10);
+  const d = new Date(`${s}T00:00:00Z`);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s) || Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== s) fail("Tanggal job tidak terbaca");
+  const max = new Date(new Date(`${today()}T00:00:00Z`).getTime() + 90 * 86400000).toISOString().slice(0, 10);
+  if (s > max) fail(`Tanggal job ${s} terlalu jauh di depan (maksimal 90 hari dari hari ini), cek tahunnya`);
+  if (s < "2020-01-01") fail(`Tanggal job ${s} terlalu lama, cek tahunnya`);
+}
+
+// Sidik isi job yang diedit lewat form (header + harga & vendor baris trucking). Form mengirim balik sidik yang ia muat;
+// kalau sudah beda, berarti orang lain mengubah job itu sejak form dibuka -> simpan ditolak supaya perubahan mereka tidak tertimpa.
+// Gate, SJ, dan posisi tidak ikut sidik (form tidak mengirimnya), jadi mengisi gate tidak mengganggu orang yang sedang mengedit.
+async function jobVersion(t, id) {
+  const [j] = await t.query(`select ${HEADER_FIELDS.join(", ")}, selling_mode, state from job where id = $1`, [id]);
+  const lines = await t.query(
+    `select jl.side, jl.amount, jl.partner_id, jl.partner_bank_id from job_line jl join product p on p.id = jl.product_id
+     where jl.job_id = $1 and p.kind = 'TRUCKING' order by jl.side, jl.id`, [id]);
+  return crypto.createHash("sha1").update(JSON.stringify([j, lines])).digest("hex").slice(0, 16);
+}
 
 const productId = async (t, kind) => (await t.query("select id from product where kind = $1", [kind]))[0].id;
 
@@ -94,8 +116,14 @@ async function listJobs(db, q) {
     `select j.*, c.name as customer, v.name as vendor, lp.code as pol, ld.code as pod,
             b.selling, b.cost, b.invoiced, b.received, b.requested, b.paid,
             kt.vendor as kurang_transfer_vendor, kt.customer as kurang_bayar_customer,
-            st.stage, st.trip_status, st.sj_status, st.customer_status, st.vendor_status, st.sj_late, st.lead_time_sj
+            st.stage, st.trip_status, st.sj_status, st.customer_status, st.vendor_status, st.sj_late, st.lead_time_sj,
+            sla.sla_hours,
+            case when j.gate_out_at is not null
+                 then round((extract(epoch from (coalesce(j.gate_in_at, now()) - j.gate_out_at)) / 3600)::numeric, 1) end as durasi_jam,
+            case when j.gate_out_at is not null and sla.sla_hours is not null
+                 then extract(epoch from (coalesce(j.gate_in_at, now()) - j.gate_out_at)) / 3600 > sla.sla_hours end as lewat_sla
      from job j
+     left join route_sla sla on sla.pol_id = j.pol_id and sla.pod_id = j.pod_id and sla.trip_type = j.trip_type
      join v_job_status st on st.job_id = j.id
      join res_partner c on c.id = j.customer_id
      left join res_partner v on v.id = j.vendor_id
@@ -132,6 +160,7 @@ export default function jobRoutes(db) {
        from account_move_line ml join account_move m on m.id = ml.move_id
        left join res_partner pt on pt.id = coalesce(m.partner_id, ml.payee_partner_id)
        where ml.job_id = $1 order by m.move_date, m.id`, [id]);
+    job.version = await jobVersion(db, id);
     return {
       job, balance,
       lines: await jobLineStatus(db, id),
@@ -164,6 +193,7 @@ export default function jobRoutes(db) {
   r.post("/jobs", requireRole(ROLES.JOB_EDIT), route((req) => db.tx(async (t) => {
     const b = req.body || {};
     for (const f of ["job_date", "customer_id", "pol_id", "pod_id", "truck_type"]) if (!b[f]) fail(`${f} wajib diisi`);
+    checkJobDate(b.job_date);
     const { mode, selling, cost } = await resolveAmounts(t, b);
     const yymm = String(b.job_date).slice(2, 4) + String(b.job_date).slice(5, 7);
     const row = pick(b, HEADER_FIELDS);
@@ -190,6 +220,14 @@ export default function jobRoutes(db) {
     const [job] = await t.query("select * from job where id = $1 for update", [id]);
     if (!job) fail("Job tidak ditemukan", 404);
     if (job.state === "cancelled") fail("Job sudah dibatalkan");
+    if (b.expected_version && b.expected_version !== (await jobVersion(t, id))) {
+      const [last] = await t.query(
+        `select u.display_name, a.at from audit_log a left join app_user u on u.id = a.user_id
+         where a.entity = 'job' and a.entity_id = $1 order by a.id desc limit 1`, [id]);
+      const who = last?.display_name ? ` oleh ${last.display_name}` : "";
+      fail(`${job.job_number} sudah diubah${who} sejak form ini dibuka. Tutup form, buka lagi, lalu ulangi perubahan Anda supaya perubahan itu tidak tertimpa.`, 409);
+    }
+    if ("job_date" in b && String(b.job_date).slice(0, 10) !== String(job.job_date).slice(0, 10)) checkJobDate(b.job_date);
     const merged = { ...job, ...b, selling_mode: b.selling_mode || job.selling_mode };
     await newVendorBank(t, b, merged.vendor_id);
     const row = pick(b, HEADER_FIELDS);
@@ -346,10 +384,30 @@ export default function jobRoutes(db) {
   r.put("/jobs/:id/trip", requireRole(ROLES.JOB_EDIT), route((req) => db.tx(async (t) => {
     const id = Number(req.params.id);
     const row = pick(req.body || {}, TRIP_FIELDS);
-    if (row.gate_out_at && row.gate_in_at && new Date(row.gate_in_at) < new Date(row.gate_out_at)) fail("Gate in tidak boleh sebelum gate out");
+    const [cur] = await t.query("select job_number, job_date, state, gate_out_at, gate_in_at from job where id = $1 for update", [id]);
+    if (!cur) fail("Job tidak ditemukan", 404);
+    // gate dicek terhadap nilai yang sudah tersimpan juga (diisi satu per satu dari daftar job)
+    const out = "gate_out_at" in row ? row.gate_out_at : cur.gate_out_at;
+    const inn = "gate_in_at" in row ? row.gate_in_at : cur.gate_in_at;
+    if ("gate_out_at" in row || "gate_in_at" in row) {
+      if (cur.state === "cancelled") fail(`${cur.job_number}: job sudah dibatalkan`);
+      if (inn && !out) fail("gate_out_at" in row ? "Hapus gate in dulu sebelum menghapus gate out" : "Isi gate out dulu (unit selesai muat dan berangkat), baru gate in");
+      if (out && inn && new Date(inn) < new Date(out)) fail("Gate in tidak boleh sebelum gate out");
+      // salah ketik tahun / tanggal: gate tidak mungkin di masa depan atau jauh sebelum tanggal job
+      const earliest = new Date(`${String(cur.job_date).slice(0, 10)}T00:00:00+07:00`).getTime() - 31 * 86400000;
+      for (const [k, label] of [["gate_out_at", "Gate out"], ["gate_in_at", "Gate in"]]) {
+        if (!row[k]) continue;
+        const at = new Date(row[k]).getTime();
+        if (Number.isNaN(at)) fail(`${label}: tanggal / jam tidak terbaca`);
+        if (at > Date.now() + 3600000) fail(`${label} tidak boleh di masa depan, cek tanggal dan tahunnya`);
+        if (at < earliest) fail(`${label} jauh sebelum tanggal job (${String(cur.job_date).slice(0, 10)}), cek tanggal dan tahunnya`);
+      }
+    }
     row.updated_at = new Date().toISOString();
     await updateRow(t, "job", id, row);
     if (row.gate_in_at) await t.query("update job set state = 'done' where id = $1 and state = 'confirmed'", [id]);
+    // gate in dihapus = trip belum selesai
+    else if ("gate_in_at" in row) await t.query("update job set state = 'confirmed' where id = $1 and state = 'done'", [id]);
     await audit(t, req, "job", id, "trip", row);
     return { ok: true };
   })));

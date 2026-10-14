@@ -414,3 +414,22 @@ html.busy::before { opacity: 1; transition: opacity .15s .25s; animation: progre
 .pager .pg-now { min-width: 58px; text-align: center; font-variant-numeric: tabular-nums; }
 .xl-info .pager { flex: 1; margin: 0; }
 @media print { .pager, html::before { display: none !important; } }
+
+/* ---------------- tempel teks WhatsApp di form Job baru ---------------- */
+.wa-paste { background: #fdf0dc; border: 1px dashed var(--line-2); border-radius: 10px; padding: 12px 14px; margin-bottom: 16px; }
+.wa-head { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; margin-bottom: 8px; font-size: 13px; }
+.wa-head .muted { font-size: 12px; }
+.wa-paste textarea { width: 100%; font-size: 13px; line-height: 1.45; resize: vertical; }
+.wa-foot { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: flex-start; margin-top: 8px; font-size: 12.5px; }
+.wa-foot #waInfo { flex: 1; min-width: 220px; }
+.ok-text { color: var(--olive-ink); }
+input.wa-filled, select.wa-filled { border-color: var(--olive); background: #f6f8ec; }
+
+/* ---------------- gate out / gate in langsung di daftar job ---------------- */
+td.gate-cell { white-space: nowrap; min-width: 190px; }
+.gate-box { display: inline-flex; gap: 4px; align-items: center; }
+td.gate-cell input[type=datetime-local] { width: 172px; padding: 4px 6px; font-size: 12px; min-height: 0; background: #fffaf2; }
+td.gate-cell input[type=datetime-local]:disabled { opacity: .45; }
+td.gate-cell input[type=datetime-local]:focus { background: #fff; }
+.gate-note { font-size: 11px; margin-top: 3px; }
+.gate-box button[hidden] { display: none; }

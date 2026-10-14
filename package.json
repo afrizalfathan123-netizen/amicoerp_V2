@@ -15,7 +15,7 @@
     "import:joblist-v1": "node scripts/import-joblist-v1.js",
     "demo:seed": "node scripts/demo-seed.js --data-dir=data/demo",
     "demo": "node server.js --data-dir=data/demo --port=3201",
-    "test": "node test/run-all.js && node test/import.test.js && node test/jobreg.test.js && node test/joblist-v1.test.js"
+    "test": "node test/run-all.js && node test/import.test.js && node test/jobreg.test.js && node test/joblist-v1.test.js && node test/wa-paste.test.js"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.8",

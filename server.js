@@ -16,6 +16,7 @@ import financeRoutes from "./routes/finance.js";
 import reportRoutes from "./routes/reports.js";
 import sjRoutes from "./routes/sj.js";
 import unitRoutes from "./routes/units.js";
+import priceCheckRoutes from "./routes/pricecheck.js";
 
 export async function createApp(db) {
   const app = express();
@@ -33,6 +34,7 @@ export async function createApp(db) {
   app.use("/api", reportRoutes(db));
   app.use("/api", sjRoutes(db));
   app.use("/api", unitRoutes(db));
+  app.use("/api", priceCheckRoutes(db));
   app.use("/api", (req, res) => res.status(404).json({ error: "Endpoint tidak ada" }));
   app.use(express.static(path.join(ROOT, "public")));
   return app;

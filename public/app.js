@@ -1,6 +1,7 @@
 // ERP AMICO v2: router, menu sesuai role, login.
 import { state, api, get, esc, view, toast, loadMaster, openModal, closeModal, ROLE_LABEL, can, icon, newNavigation, skeleton } from "./lib.js";
 import { startFox } from "./fox.js";
+import { parseDateTime } from "./wa-paste.js";
 
 const NAV = [
   { group: "Operasional" },
@@ -12,6 +13,7 @@ const NAV = [
   { href: "#/rekap", key: "rekap", label: "Rekap Posisi" },
   { href: "#/ar", key: "ar", label: "AR Customer" },
   { href: "#/ap", key: "ap", label: "AP Vendor" },
+  { href: "#/cek-harga", key: "cek-harga", label: "Cek Harga Jual" },
   { href: "#/invoices", key: "invoices", label: "Invoice Customer" },
   { href: "#/requests", key: "requests", label: "Pengajuan Vendor" },
   { href: "#/units", key: "units", label: "Unit Sewa" },
@@ -46,6 +48,7 @@ const ROUTES = [
   [/^#\/rekap$/, "reports", "renderRekap", "rekap"],
   [/^#\/ar$/, "billing", "renderAr", "ar"],
   [/^#\/ap$/, "billing", "renderAp", "ap"],
+  [/^#\/cek-harga$/, "pricecheck", "renderPriceCheck", "cek-harga"],
   [/^#\/invoices$/, "moves", "renderInvoices", "invoices"],
   [/^#\/requests$/, "moves", "renderRequests", "requests"],
   [/^#\/moves\/(\d+)$/, "moves", "renderMoveDetail", null],
@@ -148,7 +151,7 @@ function renderLogin() {
 let navSeq = 0;
 let lastHash = null;
 const SKELETON = { renderJobDetail: "detail", renderMoveDetail: "detail", renderMovePrint: "detail", renderDeliveryPrint: "detail",
-  renderJobs: "list", renderSj: "list", renderAr: "list", renderAp: "list", renderDashboard: "list", renderKas: "list" };
+  renderJobs: "list", renderSj: "list", renderAr: "list", renderAp: "list", renderDashboard: "list", renderKas: "list", renderPriceCheck: "list" };
 
 async function router() {
   const my = ++navSeq;
@@ -205,6 +208,39 @@ async function router() {
   }
   location.hash = "#/dashboard";
 }
+
+// Tempel tanggal / tanggal-jam gaya Excel ("14/10/2026 03:32") ke kotak tanggal mana pun (gate out / gate in, tanggal job, dst.).
+// Kotak tanggal bawaan browser tidak menerima tempelan teks, jadi dibaca di sini lalu diisikan.
+const dateBox = (el) => (el instanceof HTMLInputElement && ["datetime-local", "date"].includes(el.type) && !el.disabled && !el.readOnly ? el : null);
+function pasteIntoDateBox(el, text) {
+  if (!String(text || "").trim()) return;
+  const r = parseDateTime(text);
+  if (!r) return toast(`Tempelan "${String(text).trim().slice(0, 30)}" tidak terbaca. Formatnya hari/bulan/tahun jam:menit, mis. 14/10/2026 03:32`, true);
+  if (el.type === "datetime-local" && !r.time) return toast("Tempelan tidak berisi jam. Contoh: 14/10/2026 03:32", true);
+  el.value = el.type === "date" ? r.date : `${r.date}T${r.time}`;
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+  el.dispatchEvent(new Event("change", { bubbles: true }));
+  el.dispatchEvent(new CustomEvent("amico:pasted", { bubbles: true }));
+}
+let pasteSeenAt = 0;
+document.addEventListener("paste", (e) => {
+  const el = dateBox(e.target) || dateBox(document.activeElement);
+  if (!el) return;
+  pasteSeenAt = Date.now();
+  e.preventDefault();
+  pasteIntoDateBox(el, e.clipboardData?.getData("text") || "");
+});
+// cadangan: kalau browser tidak mengirim event "paste" ke kotak tanggal, Ctrl+V dibaca langsung dari clipboard
+document.addEventListener("keydown", (e) => {
+  if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "v") return;
+  const el = dateBox(document.activeElement);
+  if (!el) return;
+  const at = Date.now();
+  setTimeout(async () => {
+    if (pasteSeenAt >= at) return;
+    try { pasteIntoDateBox(el, await navigator.clipboard.readText()); } catch {}
+  }, 150);
+});
 
 window.addEventListener("hashchange", router);
 // kesalahan saat memuat ulang dari filter / tombol (di luar router) tetap terlihat, tidak hilang diam-diam
