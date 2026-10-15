@@ -74,7 +74,7 @@ importer), dan KURANG TRANSFER. Aturan ada di kepala `lib/import-jobreg.js`. Yan
 - Menu Surat Jalan: pemantauan lead time (gate in -> resi driver -> SJ diterima -> dikirim ke customer) dengan target hari,
   input cepat (tempel daftar no job / no SJ / kode tugas), dan Pengiriman SJ ke customer (satu resi untuk banyak SJ, nomor SJD,
   bisa dicetak). Customer tanpa SJ fisik lewat kurir: matikan "Lacak SJ" di partner.
-- Ringan untuk data banyak: tabel panjang ditampilkan per halaman (100 baris, bisa diubah 50 / 100 / 250 / 500) tetapi filter,
+- Ringan untuk data banyak: tabel panjang ditampilkan per halaman (paling banyak 50 baris, bisa 25) tetapi filter,
   total, centang, dan export tetap menghitung semua baris; saat memuat tampil kerangka abu-abu (skeleton) dan garis proses di
   atas layar; jawaban server dikompresi.
 - Menu **Cek Harga Jual**: job yang selling-nya beda dari price book pada tanggal job (mis. harga baru berlaku per 15 Oktober,
@@ -82,6 +82,10 @@ importer), dan KURANG TRANSFER. Aturan ada di kepala `lib/import-jobreg.js`. Yan
   Price Book, lalu mencentang job dan menyamakannya sekaligus (wajib alasan, tercatat di riwayat job). Job yang sudah ditagih
   lebih besar dari harga baru ditandai "Tidak bisa" (invoicenya harus dikoreksi dulu). AR Customer memberi peringatan kalau ada yang beda.
 - Edit job oleh dua orang bersamaan: simpan dari form yang sudah basi ditolak, supaya perubahan orang lain (mis. top-up cost) tidak tertimpa.
+- **Kode tugas unik**: satu kode tugas hanya untuk satu job (one way walau banyak titik bongkar / muat; round trip cukup kode
+  tugas pergi). Input / ubah job dengan kode tugas yang sudah dipakai job lain ditolak (huruf besar / kecil & spasi diabaikan;
+  isian kosong, "-", atau diawali "TIDAK" tidak dihitung; job batal tidak dihitung). Data lama yang terlanjur dobel ditampilkan
+  di halaman Job ("Tampilkan job-nya") untuk dibetulkan.
 - Daftar job: kolom **Gate out** / **Gate in** bisa diisi langsung di tabel (tombol "Kini" = jam sekarang), tanpa membuka Tracker.
   Di bawahnya tampil durasi trip dan SLA rute ("jalan 36 jam / SLA 48", merah kalau lewat). Gate in harus setelah gate out;
   tanggal di masa depan atau jauh sebelum tanggal job ditolak (salah ketik tahun).

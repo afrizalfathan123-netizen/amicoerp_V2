@@ -33,6 +33,23 @@ async function jobVersion(t, id) {
   return crypto.createHash("sha1").update(JSON.stringify([j, lines])).digest("hex").slice(0, 16);
 }
 
+// Kode tugas (DO) unik: satu kode tugas = satu job. One way tetap satu kode tugas walau bongkar / muat di banyak tempat;
+// round trip cukup kode tugas pergi (balikan tidak diinput). Isian kosong / diawali "TIDAK" ("TIDAK ADA KODE TUGAS",
+// "TIDAK JADI JALAN") / "-" / "xxx" tidak dihitung,
+// dan job batal tidak dihitung (kodenya boleh dipakai job pengganti). Huruf besar / kecil dan spasi diabaikan.
+export const normDo = (v) => String(v || "").replace(/\s/g, "").toUpperCase();
+export const isPlaceholderDo = (v) => { const s = String(v || "").trim(); return !s || /^(TIDAK\b|-+$|X+$)/i.test(s); };
+const DO_KEY = "upper(regexp_replace(coalesce(j.do_number, ''), '\\s', '', 'g'))";
+async function assertUniqueDo(t, doNumber, jobId = 0) {
+  if (isPlaceholderDo(doNumber)) return;
+  const key = normDo(doNumber);
+  // dua orang menyimpan kode tugas yang sama bersamaan: yang kedua menunggu lalu ditolak
+  await t.query("select pg_advisory_xact_lock(hashtext($1))", [`kode_tugas:${key}`]);
+  const [dup] = await t.query(
+    `select j.job_number from job j where j.id <> $1 and j.state <> 'cancelled' and ${DO_KEY} = $2 order by j.id limit 1`, [jobId, key]);
+  if (dup) fail(`Kode tugas ${key} sudah dipakai ${dup.job_number}. Satu kode tugas hanya untuk satu job.`);
+}
+
 const productId = async (t, kind) => (await t.query("select id from product where kind = $1", [kind]))[0].id;
 
 // Rekening baru langsung dari form job (pemilik rekening boleh beda dengan vendor, mis. PT ABC -> rekening Fulan)
@@ -144,6 +161,14 @@ export default function jobRoutes(db) {
   r.get("/jobs", requireRole(ROLES.READ), route((req) => listJobs(db, req.query)));
   // sama dengan GET /jobs, untuk daftar nomor yang panjang (tidak muat di URL)
   r.post("/jobs/query", requireRole(ROLES.READ), route((req) => listJobs(db, req.body || {})));
+  // kode tugas yang dipakai lebih dari satu job (data lama / impor) -> untuk dibetulkan
+  r.get("/jobs/duplicate-do", requireRole(ROLES.READ), route(async () => {
+    const rows = await db.query(
+      `select ${DO_KEY} as kode_tugas, json_agg(json_build_object('id', j.id, 'job_number', j.job_number, 'job_date', j.job_date) order by j.job_number) as jobs
+       from job j where j.state <> 'cancelled' and coalesce(j.do_number, '') !~* '^\\s*(tidak\\y|-+\\s*$|x+\\s*$|$)'
+       group by 1 having count(*) > 1 order by 1`);
+    return rows;
+  }));
 
   r.get("/jobs/:id", requireRole(ROLES.READ), route(async (req) => {
     const id = Number(req.params.id);
@@ -194,6 +219,7 @@ export default function jobRoutes(db) {
     const b = req.body || {};
     for (const f of ["job_date", "customer_id", "pol_id", "pod_id", "truck_type"]) if (!b[f]) fail(`${f} wajib diisi`);
     checkJobDate(b.job_date);
+    await assertUniqueDo(t, b.do_number);
     const { mode, selling, cost } = await resolveAmounts(t, b);
     const yymm = String(b.job_date).slice(2, 4) + String(b.job_date).slice(5, 7);
     const row = pick(b, HEADER_FIELDS);
@@ -228,6 +254,8 @@ export default function jobRoutes(db) {
       fail(`${job.job_number} sudah diubah${who} sejak form ini dibuka. Tutup form, buka lagi, lalu ulangi perubahan Anda supaya perubahan itu tidak tertimpa.`, 409);
     }
     if ("job_date" in b && String(b.job_date).slice(0, 10) !== String(job.job_date).slice(0, 10)) checkJobDate(b.job_date);
+    // hanya dicek kalau kode tugasnya diganti, supaya job lama yang terlanjur dobel tetap bisa diedit (dan dibetulkan)
+    if ("do_number" in b && normDo(b.do_number) !== normDo(job.do_number)) await assertUniqueDo(t, b.do_number, id);
     const merged = { ...job, ...b, selling_mode: b.selling_mode || job.selling_mode };
     await newVendorBank(t, b, merged.vendor_id);
     const row = pick(b, HEADER_FIELDS);
@@ -302,6 +330,11 @@ export default function jobRoutes(db) {
   r.post("/jobs/:id/state", requireRole(ROLES.JOB_EDIT), route((req) => db.tx(async (t) => {
     const id = Number(req.params.id);
     const { state, reason } = req.body || {};
+    // job batal dibuka lagi: kode tugasnya bisa saja sudah dipakai job pengganti
+    if (state !== "cancelled") {
+      const [cur] = await t.query("select state, do_number from job where id = $1", [id]);
+      if (cur?.state === "cancelled") await assertUniqueDo(t, cur.do_number, id);
+    }
     if (!["confirmed", "done", "cancelled"].includes(state)) fail("State tidak dikenal");
     if (state === "cancelled") {
       const [m] = await t.query(

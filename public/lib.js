@@ -243,15 +243,15 @@ export function skeleton(kind = "list") {
 }
 
 // ---------------------------------------------------------------- tabel per halaman
-// Tabel panjang digambar per halaman (bawaan 100 baris) supaya browser tidak menggambar ribuan baris sekaligus.
-const PAGE_SIZES = [50, 100, 250, 500];
+// Tabel panjang digambar per halaman (paling banyak 50 baris) supaya browser tidak menggambar ribuan baris sekaligus.
+const PAGE_SIZES = [25, 50];
 export const pageSize = () => {
   let n = 0;
   try { n = Number(localStorage.getItem("pageSize")); } catch {}
-  return PAGE_SIZES.includes(n) ? n : 100;
+  return PAGE_SIZES.includes(n) ? n : 50;     // pilihan lama (100 / 250 / 500) kembali ke 50
 };
 export function pagerHtml(total, page, size) {
-  if (total <= PAGE_SIZES[0]) return "";
+  if (total <= size) return "";            // muat di satu halaman: tanpa navigasi
   const pages = Math.max(1, Math.ceil(total / size));
   const btn = (p, label, title, off) => `<button type="button" class="small" data-pg="${p}" title="${title}" ${off ? "disabled" : ""}>${label}</button>`;
   return `<div class="pager"><span>Baris <b>${rp(page * size + 1)}&ndash;${rp(Math.min(total, (page + 1) * size))}</b> dari ${rp(total)}</span>

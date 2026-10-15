@@ -1,6 +1,6 @@
 // Tabel dengan filter & urut per kolom ala Excel: klik ▾ di header -> urutkan, cari, centang nilai yang ditampilkan.
 // Dipakai di sisi browser untuk baris yang sudah dimuat. Status filter disimpan per tabel di sessionStorage.
-// Filter, urut, centang, dan export berlaku untuk SEMUA baris; yang digambar ke layar hanya satu halaman (bawaan 100 baris)
+// Filter, urut, centang, dan export berlaku untuk SEMUA baris; yang digambar ke layar hanya satu halaman (paling banyak 50 baris)
 // supaya tabel ribuan baris tetap ringan.
 //
 //   const t = xlTable(box, { id: "jobs", columns, rowHtml, empty, order });

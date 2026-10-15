@@ -265,6 +265,36 @@ try {
     assert.equal((await load(ops)).driver2_name, null);
   });
 
+  await step("kode tugas unik: satu kode tugas satu job (huruf besar/kecil & spasi diabaikan), job batal dan isian kosong tidak dihitung", async () => {
+    const base = { job_date: "2026-10-01", customer_id: id.LINTAS, pol_id: id.JRT, pod_id: id.SBY, trip_type: "ONE_WAY", truck_type: "CDDL", selling_mode: "CUSTOM", selling: 1000000, cost: 900000 };
+    const A = await ops.call("POST", "/jobs", { ...base, do_number: "KTU-0001" });
+    assert.match(await ops.call("POST", "/jobs", { ...base, do_number: " ktu-0001 " }, 400), new RegExp(`dipakai ${A.job_number}`));
+    // isian "tidak ada" / kosong boleh berulang
+    await ops.call("POST", "/jobs", { ...base, do_number: "TIDAK ADA KODE TUGAS" });
+    await ops.call("POST", "/jobs", { ...base, do_number: "TIDAK ADA KODE TUGAS" });
+    await ops.call("POST", "/jobs", { ...base, do_number: "TIDAK JADI JALAN" });
+    await ops.call("POST", "/jobs", { ...base, do_number: "tidak jadi jalan" });
+    const B = await ops.call("POST", "/jobs", { ...base });
+    // ganti kode tugas ke yang sudah dipakai ditolak
+    let v = (await ops.call("GET", `/jobs/${B.id}`)).job.version;
+    assert.match(await ops.call("PUT", `/jobs/${B.id}`, { do_number: "ktu -0001", expected_version: v }, 400), /sudah dipakai/);
+    // job batal: kodenya boleh dipakai job pengganti; job batal itu tidak bisa dibuka lagi selama kodenya dipakai
+    await ops.call("POST", `/jobs/${A.id}/state`, { state: "cancelled", reason: "tidak jadi muat" });
+    v = (await ops.call("GET", `/jobs/${B.id}`)).job.version;
+    await ops.call("PUT", `/jobs/${B.id}`, { do_number: "KTU-0001", expected_version: v });
+    assert.match(await ops.call("POST", `/jobs/${A.id}/state`, { state: "confirmed" }, 400), /sudah dipakai/);
+    // data lama yang terlanjur dobel (mis. dari impor) tampil di daftar untuk dibetulkan, dan tetap bisa diedit
+    await db.query("update job set do_number = 'KTU-0001' where id = $1", [A.id]);
+    await db.query("update job set state = 'confirmed' where id = $1", [A.id]);
+    const dup = (await viewer.call("GET", "/jobs/duplicate-do")).find((x) => x.kode_tugas === "KTU-0001");
+    assert.deepEqual(dup.jobs.map((x) => x.id).sort(), [A.id, B.id].sort());
+    v = (await ops.call("GET", `/jobs/${A.id}`)).job.version;
+    await ops.call("PUT", `/jobs/${A.id}`, { note: "edit lain tetap bisa", expected_version: v });
+    v = (await ops.call("GET", `/jobs/${A.id}`)).job.version;
+    await ops.call("PUT", `/jobs/${A.id}`, { do_number: "KTU-0002", expected_version: v });
+    assert.equal((await viewer.call("GET", "/jobs/duplicate-do")).some((x) => x.kode_tugas === "KTU-0001"), false);
+  });
+
   await step("gate diisi dari daftar job: satu per satu, dicek terhadap yang tersimpan, salah ketik tahun ditolak, durasi & SLA di daftar", async () => {
     const row = async () => (await viewer.call("POST", "/jobs/query", { numbers: [J1.job_number] }))[0];
     let r = await row();

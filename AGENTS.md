@@ -234,7 +234,7 @@ Frontend:
   `enumOptions`, `options`). **Selalu `esc()`** untuk teks dari data.
 - Tabel daftar yang panjang: `xlTable()` (`public/xlfilter.js`) untuk filter / urut per kolom ala Excel dan centang.
 - **Kinerja & kelancaran (jangan dilonggarkan):**
-  - Jangan menggambar ribuan baris sekaligus. Daftar yang bisa panjang pakai `xlTable()` atau `pagedTable()` (bawaan 100 baris
+  - Jangan menggambar ribuan baris sekaligus. Daftar yang bisa panjang pakai `xlTable()` atau `pagedTable()` (paling banyak 50 baris
     per halaman; filter, total, centang, dan export tetap dari SEMUA baris). `table()` biasa hanya untuk daftar pendek.
   - Halaman langsung menggambar kerangka (judul, filter) lalu memuat data; wadah yang menunggu data diisi `skelTable()` /
     `skelTiles()`, bukan teks "Memuat...". Router sendiri menampilkan `skeleton()` saat pindah halaman.
@@ -259,7 +259,7 @@ npm test
 ```
 | File | Isi |
 |---|---|
-| `test/run-all.js` | alur lengkap lewat HTTP per role di PGlite memori (32 langkah, termasuk unit sewa + per periode kontrak + perpanjang + peringatan & tagihan per periode, gate dari daftar job, tanggal job salah ketik, dua orang mengedit job yang sama, cek harga jual, tempel daftar di form pengajuan, dan kompresi jawaban): job, invoice, pengajuan, bayar, transfer malam, 50/50, selisih tanpa tujuan, SJ, reroute, AR/AP, tempel daftar, export |
+| `test/run-all.js` | alur lengkap lewat HTTP per role di PGlite memori (33 langkah, termasuk kode tugas unik, unit sewa + per periode kontrak + perpanjang + peringatan & tagihan per periode, gate dari daftar job, tanggal job salah ketik, dua orang mengedit job yang sama, cek harga jual, tempel daftar di form pengajuan, dan kompresi jawaban): job, invoice, pengajuan, bayar, transfer malam, 50/50, selisih tanpa tujuan, SJ, reroute, AR/AP, tempel daftar, export |
 | `test/import.test.js` | impor dari tiruan database v1 (12) |
 | `test/jobreg.test.js` | impor JOB REGISTRATION dari workbook tiruan (15) |
 | `test/joblist-v1.test.js` | impor Job List v1 (5) |

@@ -90,6 +90,7 @@ export async function renderJobs() {
         <label>Sampai<input type="date" id="jTo" value="${esc(f.to || "")}"></label>
         <button id="jPaste" title="Tempel daftar no job / kode tugas dari Excel atau WhatsApp">Tempel daftar</button>
       </div>
+      <div id="dupDoBox"></div>
       <div id="pasteBox"></div>
       <div id="jobTable">${skelTable(10, 8)}</div>
     </div>`;
@@ -239,6 +240,19 @@ export async function renderJobs() {
   };
   el("importV1")?.addEventListener("change", (e) => importV1Modal(e.target.files[0], load));
   // ringkasan per status, klik untuk memfilter. Dimuat bersamaan dengan daftar job, tidak saling menunggu.
+  // kode tugas dobel (data lama): satu kode tugas hanya untuk satu job -> tunjukkan supaya dibetulkan
+  get("/jobs/duplicate-do").then((d) => {
+    const box = el("dupDoBox");
+    if (!box || !d.length) return;
+    box.innerHTML = `<div class="note-box warn-box paste-box"><span><b>${rp(d.length)} kode tugas dipakai lebih dari satu job</b>
+      (${rp(d.reduce((a, x) => a + x.jobs.length, 0))} job). Satu kode tugas hanya untuk satu job (one way walau banyak titik bongkar; round trip cukup kode tugas pergi).
+      Buka job-nya lalu betulkan kode tugasnya.</span><span class="spacer"></span><button type="button" class="small" id="dupDoShow">Tampilkan job-nya</button></div>`;
+    el("dupDoShow").onclick = () => {
+      paste = { by: "do", numbers: d.map((x) => x.kode_tugas) };
+      sessionStorage.setItem("jobPaste", JSON.stringify(paste));
+      load();
+    };
+  }).catch(() => {});
   const tiles = async () => {
     const sum = await get("/sj/summary");
     el("stageTiles").innerHTML = ["RENCANA", "JALAN", "MENUNGGU_SJ", "SIAP_TAGIH", "KIRIM_SJ", "MENUNGGU_BAYAR", "SELESAI"].map((s) =>
