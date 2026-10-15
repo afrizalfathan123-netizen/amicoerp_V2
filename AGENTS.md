@@ -89,6 +89,7 @@ routes/                   satu file per area, masing-masing export default fungs
                           /titipan /bank-balance /tracker + export Excel
   sj.js                   surat jalan: tracking, input cepat, pengiriman SJ (SJD), export Job List, impor Job List v1
   units.js                unit sewa: kontrak sewa, untung rugi per unit / per trip, tagihan sewa bulanan (SWA)
+  (jobs.js)               juga GET /jobs/sisihkan untuk menu Sisihkan (kode tugas dobel, trip "tidak jadi jalan" masih aktif)
   pricecheck.js           cek harga jual: job yang selling-nya beda dari price book pada tanggal job + samakan sekaligus
 public/
   index.html, styles.css  kerangka + tema (krem #FEF3E2, amber #F4AE52, rust #D4621A, espresso #2A1A0E, olive #6B8E3D)
@@ -259,7 +260,7 @@ npm test
 ```
 | File | Isi |
 |---|---|
-| `test/run-all.js` | alur lengkap lewat HTTP per role di PGlite memori (33 langkah, termasuk kode tugas unik, unit sewa + per periode kontrak + perpanjang + peringatan & tagihan per periode, gate dari daftar job, tanggal job salah ketik, dua orang mengedit job yang sama, cek harga jual, tempel daftar di form pengajuan, dan kompresi jawaban): job, invoice, pengajuan, bayar, transfer malam, 50/50, selisih tanpa tujuan, SJ, reroute, AR/AP, tempel daftar, export |
+| `test/run-all.js` | alur lengkap lewat HTTP per role di PGlite memori (34 langkah, termasuk cetak invoice format AMICO, kode tugas unik, unit sewa + per periode kontrak + perpanjang + peringatan & tagihan per periode, gate dari daftar job, tanggal job salah ketik, dua orang mengedit job yang sama, cek harga jual, tempel daftar di form pengajuan, dan kompresi jawaban): job, invoice, pengajuan, bayar, transfer malam, 50/50, selisih tanpa tujuan, SJ, reroute, AR/AP, tempel daftar, export |
 | `test/import.test.js` | impor dari tiruan database v1 (12) |
 | `test/jobreg.test.js` | impor JOB REGISTRATION dari workbook tiruan (15) |
 | `test/joblist-v1.test.js` | impor Job List v1 (5) |

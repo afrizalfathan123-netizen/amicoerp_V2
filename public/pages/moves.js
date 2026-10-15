@@ -232,7 +232,7 @@ export async function renderMoveDetail(id) {
       ${isInv ? kv("Rekening tujuan", m.bank_account ? `${m.company_bank} ${m.company_account_number} a.n. ${m.company_holder}` : "-") : ""}
       ${night ? kv("Dana di kas operasional", rp(m.titipan)) : ""}
       ${kv("Total", rp(m.amount_total))}${kv("Dibayar", rp(m.amount_paid))}${kv("Sisa", rp(m.amount_residual))}
-      ${isInv && m.tax_basis ? kv("Pajak", `dasar ${rp(m.tax_basis)}, PPN ${rp(m.ppn_amount)}, PPh 23 ${rp(m.pph23_amount)}`) : ""}
+      ${isInv && (m.ppn_amount || m.pph23_amount) ? kv("Pajak", `dasar ${rp(m.tax_basis)}, PPN ${rp(m.ppn_amount)}, PPh 23 ${rp(m.pph23_amount)}`) : ""}
       ${kv("Dibuat oleh", m.created_by_name)}${m.approved_by_name ? kv(m.approval_state === "REJECTED" ? "Ditolak oleh" : "Disetujui oleh", `${m.approved_by_name} ${jam(m.approved_at)}`) : ""}
       ${kv("Catatan", m.note)}${m.cancel_reason ? kv("Alasan batal", m.cancel_reason) : ""}
       ${m.legacy_number ? kv("Nomor lama (AMICO)", m.legacy_number) : ""}
@@ -346,6 +346,7 @@ export async function renderMoveDetail(id) {
 // ---------------------------------------------------------------- cetak
 export async function renderMovePrint(id) {
   const m = await get(`/moves/${id}`);
+  if (m.move_type === "out_invoice") return renderInvoicePrint(m, await get("/settings"));
   const s = state.cache.settings;
   const isInv = m.move_type === "out_invoice";
   const lines = m.lines.filter((l) => !l.cancelled_at);
@@ -378,6 +379,85 @@ export async function renderMovePrint(id) {
         <tr class="total"><td>Jumlah yang harus dibayar</td><td class="num">${rp(m.amount_total)}</td></tr></table>
         ${m.bank_account ? `<div class="print-bank">Pembayaran ke: <b>${esc(m.company_bank)} ${esc(m.company_account_number)}</b> a.n. ${esc(m.company_holder)}</div>` : ""}`
       : `<table class="print-sum"><tr class="total"><td>Total</td><td class="num">${rp(m.amount_total)}</td></tr></table>`}
+    </div>`;
+}
+
+// Invoice customer dengan format AMICO (sama dengan file Excel "INVOICE AMICO TO CUSTOMER"):
+// kop + logo, Bill to, blok keterangan, tabel per job, Sub Total - PPN - PPh 23 - TOTAL - DP - GRAND TOTAL, rekening, tanda tangan.
+// s = pengaturan terbaru dari server (kop, penanda tangan), bukan salinan saat login
+function renderInvoicePrint(m, s) {
+  state.cache.settings = s;
+  const lines = m.lines.filter((l) => !l.cancelled_at);
+  const dmy = (v) => (v ? new Date(`${tgl(v)}T00:00:00`).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }).replace(/ /g, "-") : "");
+  // satu job bisa punya lebih dari satu baris (selling tambahan): di tabel cukup satu baris per job
+  const jobs = [...new Map(lines.map((l) => [l.job_id, l])).values()];
+  const nowSum = jobs.reduce((a, l) => a + Number(l.job_selling || 0), 0);
+  // dasar yang tersimpan saat invoice dibuat (invoice lama tanpa dasar: pakai selling job sekarang)
+  const sub = Number(m.tax_basis) > 0 ? Number(m.tax_basis) : nowSum;
+  const ppn = Number(m.ppn_amount || 0), pph = Number(m.pph23_amount || 0);
+  const total = sub + ppn - pph;
+  const scheme = [...new Set(jobs.map((l) => l.customer_scheme))].length === 1 ? jobs[0]?.customer_scheme : null;
+  const dpPct = scheme === "50_50" ? 50 : 70;
+  const dpPrev = [...new Map(lines.map((l) => [l.job_line_id, Number(l.dp_prev || 0)])).values()].reduce((a, v) => a + v, 0);
+  const rows = [["Sub Total", sub]];
+  if (m.phase !== "DP") {
+    if (ppn) rows.push(["PPN", ppn]);
+    if (pph) rows.push(["PPH 23", -pph]);
+    if (ppn || pph) rows.push(["TOTAL", total]);
+  }
+  let expected = m.phase === "DP" ? Number(m.amount_total) : total;
+  if (m.phase === "DP") rows.push([`DP ${dpPct}%`, Number(m.amount_total)]);
+  if (m.phase === "SETTLEMENT") { rows.push([`DP ${dpPct}%`, -dpPrev]); expected = total - dpPrev; }
+  // selisih kecil karena pembulatan / selling setelah pajak diisi manual / ditagih sebagian: ditampilkan, tidak disembunyikan
+  if (Math.abs(expected - Number(m.amount_total)) >= 1) rows.push(["Adjustment", Number(m.amount_total) - expected]);
+  rows.push(["GRAND TOTAL", Number(m.amount_total)]);
+  const money = (v) => `${v < 0 ? "(" : ""}${rp(Math.abs(v))}${v < 0 ? ")" : ""}`;
+  const billName = m.bill_to_name || m.partner;
+  const billAddr = m.bill_to_address || m.partner_address || "";
+  const billNpwp = m.bill_to_npwp || m.partner_npwp || "";
+  const trucks = [...new Set(jobs.map((l) => l.truck_type).filter(Boolean))].join(", ");
+  const info = [
+    ["Client Name", `<b>${esc(billName)}</b>`, "Our Ref No", ""], ["Commodity/ Pkts", "", "Shipper / Consignee", ""],
+    ["Bill of Landing", "", "House/B Landing", ""], ["Vessel/Voyage", "", "AJU/PO", ""], ["POL/POD/ETD", "", "KGM/ M3", ""],
+    ["Shipment Type", esc(trucks ? `Trucking ${trucks}` : "Trucking"), "Our Job No", esc(jobs.length === 1 ? jobs[0].job_number : "")],
+  ];
+  view().innerHTML = `
+    <div class="page-head no-print"><a href="#/moves/${m.id}" class="btn">&larr; Kembali</a><div class="spacer"></div>
+      <span class="muted">Kertas A4 tegak. Di jendela cetak pilih "Save as PDF" untuk PDF.</span><button class="primary" onclick="window.print()">Cetak / simpan PDF</button></div>
+    ${Math.abs(sub - nowSum) >= 1 ? `<div class="note-box warn-box no-print">Selling job berubah sesudah invoice ini dibuat (sekarang ${rp(nowSum)}, saat invoice ${rp(sub)}).
+      Sub Total memakai nilai saat invoice dibuat; harga per baris di tabel memakai selling sekarang.</div>` : ""}
+    <div class="inv-doc">
+      <div class="inv-top">
+        <img class="inv-logo" src="img/logo-amico.png" alt="AMICO">
+        <div class="inv-company"><div class="inv-co-name">${esc(s.company_name || "")}</div>
+          ${s.company_tagline !== "" ? `<div class="inv-co-tag">${esc(s.company_tagline ?? "Freight Forwarding & Logistics")}</div>` : ""}
+          <div class="inv-co-addr">${esc(s.company_address || "")}</div></div>
+      </div>
+      <div class="inv-title">INVOICE</div>
+      <div class="inv-head">
+        <div class="inv-bill"><div>Bill to :</div><div class="inv-bill-name">${esc(billName)}</div><div class="inv-pre">${esc(billAddr)}</div>
+          <table class="inv-kv"><tr><td>NPWP</td><td>: ${esc(billNpwp)}</td></tr><tr><td>Telp.</td><td>: ${esc(m.partner_phone || "")}</td></tr>
+            <tr><td>ATTN</td><td>: ${esc(m.partner_attn || "")}</td></tr></table></div>
+        <table class="inv-kv inv-no"><tr><td>Invoice No</td><td>: <b>${esc(m.number || "(draft)")}</b></td></tr><tr><td>Date</td><td>: ${dmy(m.move_date)}</td></tr>
+          ${m.due_date ? `<tr><td>Due Date</td><td>: ${dmy(m.due_date)}</td></tr>` : ""}</table>
+      </div>
+      <table class="inv-info">${info.map((r, i) => `<tr class="${i === 0 ? "shade" : ""}"><td>${r[0]}</td><td>: ${r[1]}</td><td>${r[2]}</td><td>: ${r[3]}</td></tr>`).join("")}</table>
+      <table class="inv-lines">
+        <thead><tr><th>No</th><th>Job Number</th><th>Date</th><th>Kode Tugas</th><th>Origin</th><th>Route</th><th>Plate Number</th><th>Qty</th><th>Unit Price</th><th>Total Price</th></tr></thead>
+        <tbody>${jobs.map((l, i) => `<tr><td>${i + 1}</td><td>${esc(l.job_number)}</td><td>${dmy(l.job_date)}</td><td>${esc(l.do_number || "")}</td>
+          <td>${esc(l.pol)}</td><td>${esc(l.pod)}</td><td>${esc(l.plate_number || "")}</td><td>1</td>
+          <td class="num">${rp(l.job_selling)}</td><td class="num">${rp(l.job_selling)}</td></tr>`).join("")}</tbody>
+      </table>
+      <table class="inv-sum">${rows.map(([k, v]) => `<tr class="${k === "GRAND TOTAL" ? "grand" : ""}"><td>${esc(k)}</td><td class="num">${money(v)}</td></tr>`).join("")}</table>
+      <div class="inv-foot">
+        <div class="inv-bank"><div>Please make your payment to the following bank account:</div>
+          <table class="inv-kv"><tr><td><b>BANK NAME</b></td><td>: ${esc(m.company_bank || "")}</td></tr>
+            <tr><td><b>BANK ACCOUNT NO</b></td><td>: ${esc(m.company_account_number || "")}</td></tr>
+            <tr><td><b>ACCOUNT NAME</b></td><td>: ${esc(m.company_holder || "")}</td></tr></table></div>
+        <div class="inv-sign"><div>Approved By,</div>
+          <div class="inv-sig-img">${s.invoice_signature ? `<img src="${esc(s.invoice_signature)}" alt="">` : ""}</div>
+          <div class="inv-signer">${esc(s.invoice_signer || "")}</div><b>${esc(s.company_name || "")}</b></div>
+      </div>
     </div>`;
 }
 

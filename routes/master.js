@@ -7,7 +7,7 @@ import { route, fail, pick, insertRow, updateRow, audit } from "../lib/util.js";
 const MASTER = {
   partners: {
     table: "res_partner", write: ROLES.FINANCE, order: "name",
-    fields: ["code", "name", "is_customer", "is_vendor", "phone", "email", "address", "npwp", "bill_to_name", "bill_to_address",
+    fields: ["code", "name", "is_customer", "is_vendor", "phone", "email", "address", "npwp", "attn", "bill_to_name", "bill_to_address",
       "bill_to_npwp", "pph_pct", "ppn_pct", "payment_terms_days", "payment_scheme", "sj_tracking", "active"],
   },
   "partner-banks": {
@@ -28,7 +28,8 @@ const MASTER = {
   products: { table: "product", write: [], order: "id", fields: [] },
 };
 
-const SETTING_KEYS = ["company_name", "company_address", "company_npwp", "vendor_approval_required",
+// company_tagline, invoice_signer, invoice_signature: kop & tanda tangan cetak invoice (tanda tangan = gambar, diunggah ADMIN)
+const SETTING_KEYS = ["company_name", "company_address", "company_npwp", "company_tagline", "invoice_signer", "invoice_signature", "vendor_approval_required",
   "require_gate_for_billing", "sj_target_resi_days", "sj_target_kurir_days", "sj_target_kirim_days"];
 
 export default function masterRoutes(db) {
@@ -62,12 +63,17 @@ export default function masterRoutes(db) {
     return Object.fromEntries(rows.map((x) => [x.key, x.value]));
   }));
   r.put("/settings", requireRole(ROLES.ADMIN), route((req) => db.tx(async (t) => {
+    const sig = req.body?.invoice_signature;
+    if (sig && !/^data:image\/(png|jpeg);base64,[A-Za-z0-9+/=]+$/.test(sig)) fail("Tanda tangan harus gambar PNG / JPG");
+    if (sig && sig.length > 700000) fail("Gambar tanda tangan terlalu besar (maksimal sekitar 500 KB)");
     for (const k of SETTING_KEYS) {
       if (!(k in (req.body || {}))) continue;
       await t.query("insert into app_setting (key, value) values ($1, $2) on conflict (key) do update set value = excluded.value",
         [k, JSON.stringify(req.body[k])]);
     }
-    await audit(t, req, "app_setting", null, "update", req.body);
+    // gambar tanda tangan tidak disalin ke audit (besar); cukup dicatat bahwa diganti
+    await audit(t, req, "app_setting", null, "update",
+      { ...req.body, ...("invoice_signature" in (req.body || {}) ? { invoice_signature: req.body.invoice_signature ? "(diganti)" : "(dihapus)" } : {}) });
     return { ok: true };
   })));
 

@@ -295,6 +295,7 @@ export const table = (head, rows, empty = "Tidak ada data", foot = "") =>
 const ICON = {
   dashboard: `<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>`,
   jobs: `<path d="M2 7h11v9H2z"/><path d="M13 10h4l3 3v3h-7"/><circle cx="6" cy="17.5" r="1.8"/><circle cx="16.5" cy="17.5" r="1.8"/>`,
+  sisihkan: `<path d="M4 6h16M4 12h10M4 18h7"/><path d="m15 15 5 5M20 15l-5 5"/>`,
   tracker: `<path d="M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0c0 5.4-6.5 11-6.5 11z"/><circle cx="12" cy="10" r="2.3"/>`,
   rekap: `<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>`,
   ar: `<path d="M4 7h16v12H4z"/><path d="M4 11h16M12 14.5v3M10.5 16h3"/><path d="M8 7V5h8v2"/>`,

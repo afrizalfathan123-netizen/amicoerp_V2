@@ -170,6 +170,26 @@ export default function jobRoutes(db) {
     return rows;
   }));
 
+  // Halaman "Sisihkan": job yang perlu dibetulkan dulu.
+  //   dobel     = kode tugas dipakai lebih dari satu job aktif (satu kode tugas hanya untuk satu job)
+  //   tidak_jalan = job aktif yang kode tugasnya berisi "TIDAK JADI ..." (trip batal, seharusnya job dibatalkan)
+  r.get("/jobs/sisihkan", requireRole(ROLES.READ), route(async () => {
+    const cols = `j.id, j.job_number, j.job_date, j.do_number, j.state, c.name as customer, lp.code as pol, ld.code as pod, j.trip_type,
+                  j.delivery_scope, j.plate_number, j.driver1_name, j.gate_out_at, j.gate_in_at,
+                  (select count(*)::int from account_move_line ml join account_move m on m.id = ml.move_id
+                    where ml.job_id = j.id and m.state <> 'cancelled' and ml.cancelled_at is null) as dokumen`;
+    const joins = `join res_partner c on c.id = j.customer_id join location lp on lp.id = j.pol_id join location ld on ld.id = j.pod_id`;
+    const dobel = await db.query(
+      `with d as (select ${DO_KEY} as kode, j.id from job j where j.state <> 'cancelled' and coalesce(j.do_number, '') !~* '^\\s*(tidak\\y|-+\\s*$|x+\\s*$|$)'),
+            k as (select kode from d group by kode having count(*) > 1)
+       select d.kode as kode_tugas, ${cols} from d join k using (kode) join job j on j.id = d.id ${joins}
+       order by d.kode, j.job_number`);
+    const tidakJalan = await db.query(
+      `select ${cols} from job j ${joins}
+       where j.state <> 'cancelled' and coalesce(j.do_number, '') ~* 'tidak\\s*jadi' order by j.job_number`);
+    return { dobel, tidak_jalan: tidakJalan };
+  }));
+
   r.get("/jobs/:id", requireRole(ROLES.READ), route(async (req) => {
     const id = Number(req.params.id);
     const [job] = await db.query(

@@ -9,7 +9,7 @@ const TABS = {
       "Skema bayar default dipakai saat job baru dibuat (kosong = dalam kota 100%, antar kota 70/30; vendor hanya 70/30 atau 100%).",
     columns: [["code", "Kode"], ["name", "Nama"], ["is_customer", "Customer", "bool"], ["is_vendor", "Vendor", "bool"], ["pph_pct", "PPh %", "pct"],
       ["ppn_pct", "PPN %", "pct"], ["payment_scheme", "Skema bayar default", "scheme"], ["sj_tracking", "Lacak SJ (SJ fisik dikirim balik lewat kurir)", "bool"], ["payment_terms_days", "Tempo (hari)", "number"], ["phone", "HP"], ["email", "Email"], ["address", "Alamat", "wide"],
-      ["npwp", "NPWP"], ["bill_to_name", "Nama di invoice"], ["bill_to_address", "Alamat di invoice", "wide"], ["bill_to_npwp", "NPWP di invoice"], ["active", "Aktif", "bool"]],
+      ["npwp", "NPWP"], ["attn", "ATTN (kontak di invoice)"], ["bill_to_name", "Nama di invoice"], ["bill_to_address", "Alamat di invoice", "wide"], ["bill_to_npwp", "NPWP di invoice"], ["active", "Aktif", "bool"]],
     list: ["code", "name", "is_customer", "is_vendor", "pph_pct", "ppn_pct", "payment_scheme", "phone", "active"],
   },
   "partner-banks": {
@@ -112,18 +112,38 @@ async function renderSettings() {
     <form class="panel" id="setForm"><div class="form-grid">
       <label>Nama perusahaan<input name="company_name" value="${esc(s.company_name || "")}"></label>
       <label>NPWP<input name="company_npwp" value="${esc(s.company_npwp || "")}"></label>
-      <label class="wide">Alamat<textarea name="company_address" rows="2">${esc(s.company_address || "")}</textarea></label>
+      <label class="wide">Alamat (boleh 2 baris, tampil di kop invoice)<textarea name="company_address" rows="2">${esc(s.company_address || "")}</textarea></label>
+      <label>Tagline di kop invoice<input name="company_tagline" value="${esc(s.company_tagline ?? "Freight Forwarding & Logistics")}"></label>
+      <label>Nama penanda tangan invoice<input name="invoice_signer" value="${esc(s.invoice_signer || "")}" placeholder="mis. ARIF WIROYUDHO"></label>
+      <div class="wide sig-box"><span>Tanda tangan di invoice (opsional, gambar PNG / JPG)</span>
+        <div id="sigPreview">${s.invoice_signature ? `<img src="${esc(s.invoice_signature)}" alt="tanda tangan">` : `<span class="muted">Belum ada. Tanpa gambar, invoice dicetak dengan ruang kosong untuk tanda tangan basah.</span>`}</div>
+        <input type="file" id="sigFile" accept="image/png,image/jpeg"> ${s.invoice_signature ? `<button type="button" class="small danger" id="sigDel">Hapus tanda tangan</button>` : ""}</div>
       <label class="check"><input type="checkbox" name="vendor_approval_required" ${s.vendor_approval_required !== false ? "checked" : ""}> Pengajuan vendor perlu persetujuan ADMIN</label>
       <label class="check wide"><input type="checkbox" name="require_gate_for_billing" ${s.require_gate_for_billing !== false ? "checked" : ""}> Invoice customer dan pelunasan / full vendor wajib kode tugas + jam gate out (job rencana hanya boleh DP / calo vendor)</label>
       <label>Target resi SJ dari driver (hari setelah gate in)<input type="number" min="0" name="sj_target_resi_days" value="${esc(s.sj_target_resi_days ?? 2)}"></label>
       <label>Target SJ di kurir (hari)<input type="number" min="0" name="sj_target_kurir_days" value="${esc(s.sj_target_kurir_days ?? 4)}"></label>
       <label>Target kirim SJ ke customer (hari setelah diterima)<input type="number" min="0" name="sj_target_kirim_days" value="${esc(s.sj_target_kirim_days ?? 3)}"></label>
     </div><div class="modal-foot"><button class="primary" type="submit">Simpan</button></div></form>`;
+  // tanda tangan: dibaca jadi data URL, disimpan bersama pengaturan lain saat klik Simpan
+  let signature;   // undefined = tidak diubah, "" = dihapus
+  document.getElementById("sigFile").onchange = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (file.size > 500000) { e.target.value = ""; return toast("Gambar terlalu besar, maksimal 500 KB", true); }
+    const rd = new FileReader();
+    rd.onload = () => { signature = rd.result; document.getElementById("sigPreview").innerHTML = `<img src="${signature}" alt="tanda tangan">`; };
+    rd.readAsDataURL(file);
+  };
+  document.getElementById("sigDel")?.addEventListener("click", () => {
+    signature = "";
+    document.getElementById("sigPreview").innerHTML = `<span class="muted">Akan dihapus saat disimpan.</span>`;
+  });
   document.getElementById("setForm").onsubmit = async (e) => {
     e.preventDefault();
     const f = e.target;
     try {
       await api("PUT", "/settings", { company_name: f.company_name.value, company_npwp: f.company_npwp.value, company_address: f.company_address.value,
+        company_tagline: f.company_tagline.value, invoice_signer: f.invoice_signer.value, ...(signature !== undefined ? { invoice_signature: signature } : {}),
         vendor_approval_required: f.vendor_approval_required.checked, require_gate_for_billing: f.require_gate_for_billing.checked,
         sj_target_resi_days: Number(f.sj_target_resi_days.value), sj_target_kurir_days: Number(f.sj_target_kurir_days.value),
         sj_target_kirim_days: Number(f.sj_target_kirim_days.value) });

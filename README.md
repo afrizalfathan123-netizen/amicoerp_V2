@@ -82,10 +82,16 @@ importer), dan KURANG TRANSFER. Aturan ada di kepala `lib/import-jobreg.js`. Yan
   Price Book, lalu mencentang job dan menyamakannya sekaligus (wajib alasan, tercatat di riwayat job). Job yang sudah ditagih
   lebih besar dari harga baru ditandai "Tidak bisa" (invoicenya harus dikoreksi dulu). AR Customer memberi peringatan kalau ada yang beda.
 - Edit job oleh dua orang bersamaan: simpan dari form yang sudah basi ditolak, supaya perubahan orang lain (mis. top-up cost) tidak tertimpa.
+- **Cetak invoice customer** berformat AMICO (sama dengan Excel "INVOICE AMICO TO CUSTOMER"): logo & kop perusahaan, Bill to
+  (nama, alamat, NPWP, Telp, ATTN), blok keterangan, tabel per job (Job Number, Date, Kode Tugas, Origin, Route, Plate Number, Qty,
+  Unit Price, Total Price), Sub Total - PPN - PPh 23 - TOTAL - DP - GRAND TOTAL, rekening tujuan, dan tanda tangan. Kop (tagline,
+  alamat 2 baris), nama penanda tangan, dan gambar tanda tangan diatur ADMIN di Master Data > Perusahaan; ATTN di data partner.
+  Sub Total memakai nilai saat invoice dibuat, jadi cetak ulang tetap sama walau harga job berubah.
 - **Kode tugas unik**: satu kode tugas hanya untuk satu job (one way walau banyak titik bongkar / muat; round trip cukup kode
   tugas pergi). Input / ubah job dengan kode tugas yang sudah dipakai job lain ditolak (huruf besar / kecil & spasi diabaikan;
   isian kosong, "-", atau diawali "TIDAK" tidak dihitung; job batal tidak dihitung). Data lama yang terlanjur dobel ditampilkan
-  di halaman Job ("Tampilkan job-nya") untuk dibetulkan.
+  di menu **Sisihkan**: dikelompokkan per kode tugas, kode tugas bisa diganti langsung di sana, dan job "TIDAK JADI JALAN"
+  yang masih aktif bisa dibatalkan (hanya kalau belum punya invoice / pengajuan aktif).
 - Daftar job: kolom **Gate out** / **Gate in** bisa diisi langsung di tabel (tombol "Kini" = jam sekarang), tanpa membuka Tracker.
   Di bawahnya tampil durasi trip dan SLA rute ("jalan 36 jam / SLA 48", merah kalau lewat). Gate in harus setelah gate out;
   tanggal di masa depan atau jauh sebelum tanggal job ditolak (salah ketik tahun).

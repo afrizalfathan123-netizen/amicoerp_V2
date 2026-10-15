@@ -196,15 +196,17 @@ async function writeLines(t, moveId, move, lines) {
   }
 }
 
-// Info pajak invoice (untuk cetak): dasar = selling kotor job, PPN / PPh dari customer
+// Info pajak invoice (untuk cetak): dasar = selling kotor job SAAT invoice dibuat (cetak ulang tetap sama walau harga job berubah),
+// PPN / PPh dari customer. Invoice DP: dasar disimpan, PPN / PPh 0 (pajak dihitung di pelunasan / full).
 async function invoiceTax(t, moveId) {
   const [m] = await t.query("select * from account_move where id = $1", [moveId]);
-  if (m.move_type !== "out_invoice" || m.phase === "DP") {
+  if (m.move_type !== "out_invoice") {
     await t.query("update account_move set tax_basis = 0, ppn_amount = 0, pph23_amount = 0 where id = $1", [moveId]);
     return;
   }
+  const dp = m.phase === "DP";
   await t.query(
-    `update account_move m set tax_basis = x.basis, ppn_amount = round(x.basis * c.ppn_pct / 100), pph23_amount = round(x.basis * c.pph_pct / 100)
+    `update account_move m set tax_basis = x.basis, ppn_amount = ${dp ? "0" : "round(x.basis * c.ppn_pct / 100)"}, pph23_amount = ${dp ? "0" : "round(x.basis * c.pph_pct / 100)"}
      from (select sum(jl.amount) as basis from job_line jl
            where jl.side = 'SALE' and jl.job_id in (select distinct job_id from account_move_line where move_id = $1 and cancelled_at is null)) x,
           res_partner c
@@ -213,7 +215,7 @@ async function invoiceTax(t, moveId) {
 
 export async function loadMove(q, id) {
   const [move] = await q.query(
-    `select m.*, pt.name as partner, pt.address as partner_address, pt.npwp as partner_npwp,
+    `select m.*, pt.name as partner, pt.address as partner_address, pt.npwp as partner_npwp, pt.phone as partner_phone, pt.attn as partner_attn,
             pt.pph_pct, pt.ppn_pct, s.amount_total, s.amount_paid, s.amount_residual,
             ba.name as bank_account, ba.bank_name as company_bank, ba.account_number as company_account_number, ba.holder as company_holder,
             cu.display_name as created_by_name, au.display_name as approved_by_name,

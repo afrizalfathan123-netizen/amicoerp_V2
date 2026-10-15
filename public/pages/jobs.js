@@ -246,7 +246,8 @@ export async function renderJobs() {
     if (!box || !d.length) return;
     box.innerHTML = `<div class="note-box warn-box paste-box"><span><b>${rp(d.length)} kode tugas dipakai lebih dari satu job</b>
       (${rp(d.reduce((a, x) => a + x.jobs.length, 0))} job). Satu kode tugas hanya untuk satu job (one way walau banyak titik bongkar; round trip cukup kode tugas pergi).
-      Buka job-nya lalu betulkan kode tugasnya.</span><span class="spacer"></span><button type="button" class="small" id="dupDoShow">Tampilkan job-nya</button></div>`;
+      Betulkan di menu Sisihkan.</span><span class="spacer"></span><a class="btn small" href="#/sisihkan">Buka Sisihkan</a>
+      <button type="button" class="small" id="dupDoShow">Tampilkan di tabel ini</button></div>`;
     el("dupDoShow").onclick = () => {
       paste = { by: "do", numbers: d.map((x) => x.kode_tugas) };
       sessionStorage.setItem("jobPaste", JSON.stringify(paste));

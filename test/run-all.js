@@ -287,6 +287,10 @@ try {
     await db.query("update job set do_number = 'KTU-0001' where id = $1", [A.id]);
     await db.query("update job set state = 'confirmed' where id = $1", [A.id]);
     const dup = (await viewer.call("GET", "/jobs/duplicate-do")).find((x) => x.kode_tugas === "KTU-0001");
+    // halaman Sisihkan: job dobel + job "tidak jadi jalan" yang masih aktif
+    const sis = await viewer.call("GET", "/jobs/sisihkan");
+    assert.deepEqual(sis.dobel.filter((x) => x.kode_tugas === "KTU-0001").map((x) => x.id).sort(), [A.id, B.id].sort());
+    assert.equal(sis.tidak_jalan.filter((x) => /tidak jadi jalan/i.test(x.do_number)).length, 2);
     assert.deepEqual(dup.jobs.map((x) => x.id).sort(), [A.id, B.id].sort());
     v = (await ops.call("GET", `/jobs/${A.id}`)).job.version;
     await ops.call("PUT", `/jobs/${A.id}`, { note: "edit lain tetap bisa", expected_version: v });
@@ -727,6 +731,31 @@ try {
     const bill = (await viewer.call("GET", "/units/rent-bills?all=1")).find((x) => x.plate_number === "B 6000 AL");
     assert.deepEqual([telat.sisa_hari, telat.residual, bill.days], [-20, bill.amount, 24]);
     assert.ok(bill.amount < 9000000);
+  });
+
+  await step("cetak invoice format AMICO: ATTN customer, kop & tanda tangan di pengaturan", async () => {
+    await fin.call("PUT", `/partners/${id.LINTAS}`, { attn: "Pak Kevin", phone: "021-555" });
+    const inv = (await viewer.call("GET", "/moves?move_type=out_invoice")).find((x) => x.partner === "LINTAS" && x.state === "posted");
+    const d = await viewer.call("GET", `/moves/${inv.id}`);
+    assert.deepEqual([d.partner_attn, d.partner_phone], ["Pak Kevin", "021-555"]);
+    // invoice DP menyimpan dasar selling saat dibuat (cetak ulang tetap sama walau harga job berubah); PPN / PPh di pelunasan
+    const dpInv = (await viewer.call("GET", "/moves?move_type=out_invoice")).filter((x) => x.phase === "DP" && x.state === "posted");
+    const dpd = await viewer.call("GET", `/moves/${dpInv[dpInv.length - 1].id}`);
+    assert.ok(dpd.tax_basis > 0);
+    assert.deepEqual([dpd.ppn_amount, dpd.pph23_amount], [0, 0]);
+    // pengaturan invoice: hanya ADMIN, tanda tangan harus gambar
+    assert.match(await fin.call("PUT", "/settings", { invoice_signer: "X" }, 403), /akses/);
+    assert.match(await admin.call("PUT", "/settings", { invoice_signature: "data:text/html;base64,PHNjcmlwdD4=" }, 400), /PNG \/ JPG/);
+    const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+    await admin.call("PUT", "/settings", { company_tagline: "Freight Forwarding & Logistics", invoice_signer: "ARIF WIROYUDHO", invoice_signature: png });
+    const st = await viewer.call("GET", "/settings");
+    assert.deepEqual([st.invoice_signer, st.invoice_signature === png], ["ARIF WIROYUDHO", true]);
+    const log = (await admin.call("GET", "/audit?entity=app_setting"))[0];
+    assert.equal(log.detail.invoice_signature, "(diganti)");      // gambar tidak disalin ke log
+    await admin.call("PUT", "/settings", { invoice_signature: "" });
+    // logo untuk kop invoice tersedia
+    const logo = await fetch(base.replace(/\/api$/, "") + "/img/logo-amico.png");
+    assert.equal(logo.headers.get("content-type"), "image/png");
   });
 
   await step("kelola user (ADMIN saja) + audit", async () => {
