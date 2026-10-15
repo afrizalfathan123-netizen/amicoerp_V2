@@ -227,7 +227,7 @@ export async function loadMove(q, id) {
      where m.id = $1`, [id]);
   if (!move) fail("Dokumen tidak ditemukan", 404);
   move.lines = await q.query(
-    `select ml.*, j.job_number, j.plate_number, j.do_number, j.job_date, j.truck_type, p.kind, payee.name as payee_name,
+    `select ml.*, j.job_number, j.plate_number, j.do_number, j.job_date, j.gate_out_at, j.truck_type, p.kind, payee.name as payee_name,
             j.driver1_name, j.driver1_phone, j.driver2_name, j.driver2_phone, j.vendor_scheme, j.customer_scheme, cu.name as customer,
             lp.code as pol, ld.code as pod, jl.amount as line_amount,
             (select coalesce(sum(ml2.amount), 0) from account_move_line ml2 join account_move m2 on m2.id = ml2.move_id

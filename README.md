@@ -83,8 +83,9 @@ importer), dan KURANG TRANSFER. Aturan ada di kepala `lib/import-jobreg.js`. Yan
   lebih besar dari harga baru ditandai "Tidak bisa" (invoicenya harus dikoreksi dulu). AR Customer memberi peringatan kalau ada yang beda.
 - Edit job oleh dua orang bersamaan: simpan dari form yang sudah basi ditolak, supaya perubahan orang lain (mis. top-up cost) tidak tertimpa.
 - **Cetak invoice customer** berformat AMICO (sama dengan Excel "INVOICE AMICO TO CUSTOMER"): logo & kop perusahaan, Bill to
-  (nama, alamat, NPWP, Telp, ATTN), blok keterangan, tabel per job (Job Number, Date, Kode Tugas, Origin, Route, Plate Number, Qty,
-  Unit Price, Total Price), Sub Total - PPN - PPh 23 - TOTAL - DP - GRAND TOTAL, rekening tujuan, dan tanda tangan. Kop (tagline,
+  (nama, alamat, NPWP, Telp, ATTN), blok keterangan, tabel per job (Job Number, Tanggal Jalan = tanggal gate out, Kode Tugas,
+  Origin, Route, Plate Number, Truck Type, Total Price), Sub Total - PPN - PPh 23 - TOTAL - DP - GRAND TOTAL, rekening tujuan,
+  dan tanda tangan. Garis horizontal seperti di Excel + garis oranye di bawah kop. Kop (tagline,
   alamat 2 baris), nama penanda tangan, dan gambar tanda tangan diatur ADMIN di Master Data > Perusahaan; ATTN di data partner.
   Sub Total memakai nilai saat invoice dibuat, jadi cetak ulang tetap sama walau harga job berubah.
 - **Kode tugas unik**: satu kode tugas hanya untuk satu job (one way walau banyak titik bongkar / muat; round trip cukup kode

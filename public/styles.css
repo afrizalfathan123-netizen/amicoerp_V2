@@ -440,15 +440,16 @@ td.gate-cell input[type=datetime-local]:focus { background: #fff; }
 .unit-alerts li { margin: 3px 0; }
 
 /* ---------------- cetak invoice format AMICO (A4 tegak) ---------------- */
+/* garis seperti Excel "INVOICE AMICO TO CUSTOMER": horizontal saja, + garis oranye di bawah kop */
 .inv-doc { background: #fff; color: #000; font-family: Arial, Helvetica, sans-serif; font-size: 12px; max-width: 800px; padding: 28px 32px;
   border: 1px solid var(--line); border-radius: var(--radius); }
-.inv-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.inv-top { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; padding-bottom: 10px; border-bottom: 3px solid #e07a28; }
 .inv-logo { width: 96px; height: auto; }
 .inv-company { text-align: right; }
 .inv-co-name { font-size: 20px; font-weight: 700; }
 .inv-co-tag { font-weight: 700; font-size: 12.5px; }
 .inv-co-addr { white-space: pre-line; font-size: 12px; }
-.inv-title { text-align: center; font-size: 17px; font-weight: 700; letter-spacing: .04em; margin: 14px 0 10px 40%; }
+.inv-title { text-align: center; font-size: 17px; font-weight: 700; letter-spacing: .04em; margin: 12px 0 10px 40%; }
 .inv-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; }
 .inv-bill-name { font-weight: 700; margin: 2px 0; }
 .inv-pre { white-space: pre-line; }
@@ -456,21 +457,23 @@ td.gate-cell input[type=datetime-local]:focus { background: #fff; }
 .inv-kv td { border: 0; padding: 1px 6px 1px 0; vertical-align: top; }
 .inv-kv td:first-child { white-space: nowrap; }
 .inv-no { min-width: 230px; }
-.inv-info { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 12px; }
+.inv-info { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 12px; border-top: 1px solid #000; border-bottom: 1px solid #000; }
 .inv-info td { border: 0; padding: 2px 6px; }
 .inv-info td:nth-child(1), .inv-info td:nth-child(3) { width: 17%; white-space: nowrap; }
-.inv-info tr.shade td { background: #fae2d5; }
-.inv-lines { width: 100%; border-collapse: collapse; font-size: 11px; table-layout: auto; }
-.inv-lines th { background: #fae2d5; color: #000; font-weight: 700; text-transform: none; letter-spacing: 0; font-size: 11px; text-align: center; white-space: normal; }
-.inv-lines th, .inv-lines td { border: 1px solid #000; padding: 3px 4px; }
-.inv-lines td { white-space: nowrap; }
-.inv-lines td { text-align: center; }
+.inv-info td:nth-child(3) { border-left: 1px solid #000; }
+.inv-info tr.shade td { background: #fae2d5; border-bottom: 1px solid #000; }
+.inv-lines { width: 100%; border-collapse: collapse; font-size: 11px; border-bottom: 1px solid #000; }
+.inv-lines th { background: #fae2d5; color: #000; font-weight: 700; text-transform: none; letter-spacing: 0; font-size: 11px; text-align: center;
+  white-space: normal; border: 0; border-top: 1px solid #000; border-bottom: 1px solid #000; padding: 5px 4px; }
+.inv-lines td { border: 0; padding: 4px; text-align: center; white-space: nowrap; }
 .inv-lines td.num { text-align: right; }
-.inv-sum { width: 330px; margin: 10px 0 0 auto; border-collapse: collapse; font-size: 12px; }
+.inv-sum { width: 100%; margin: 8px 0 0; border-collapse: collapse; font-size: 12px; }
 .inv-sum td { border: 0; padding: 2px 8px; font-weight: 700; }
-.inv-sum td.num { font-weight: 400; text-align: right; }
-.inv-sum tr.grand td { border-top: 1.5px solid #000; font-weight: 700; }
+.inv-sum td.sp { width: 58%; }
+.inv-sum td.num { font-weight: 400; text-align: right; width: 22%; }
+.inv-sum tr.grand td { border-top: 1px solid #000; padding-top: 4px; }
 .inv-foot { display: flex; justify-content: space-between; align-items: flex-end; gap: 24px; margin-top: 26px; }
+.inv-bank { border-top: 1px solid #000; border-bottom: 1px solid #000; padding: 4px 0; }
 .inv-sign { text-align: center; min-width: 220px; }
 .inv-sig-img { height: 80px; display: flex; align-items: center; justify-content: center; }
 .inv-sig-img img { max-height: 80px; max-width: 200px; }

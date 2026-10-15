@@ -412,6 +412,8 @@ function renderInvoicePrint(m, s) {
   if (Math.abs(expected - Number(m.amount_total)) >= 1) rows.push(["Adjustment", Number(m.amount_total) - expected]);
   rows.push(["GRAND TOTAL", Number(m.amount_total)]);
   const money = (v) => `${v < 0 ? "(" : ""}${rp(Math.abs(v))}${v < 0 ? ")" : ""}`;
+  // tanggal jalan = tanggal gate out (waktu Jakarta); belum gate out = tanggal job
+  const jamDate = (v) => (v ? new Date(v).toLocaleDateString("sv-SE", { timeZone: "Asia/Jakarta" }) : "");
   const billName = m.bill_to_name || m.partner;
   const billAddr = m.bill_to_address || m.partner_address || "";
   const billNpwp = m.bill_to_npwp || m.partner_npwp || "";
@@ -443,12 +445,12 @@ function renderInvoicePrint(m, s) {
       </div>
       <table class="inv-info">${info.map((r, i) => `<tr class="${i === 0 ? "shade" : ""}"><td>${r[0]}</td><td>: ${r[1]}</td><td>${r[2]}</td><td>: ${r[3]}</td></tr>`).join("")}</table>
       <table class="inv-lines">
-        <thead><tr><th>No</th><th>Job Number</th><th>Date</th><th>Kode Tugas</th><th>Origin</th><th>Route</th><th>Plate Number</th><th>Qty</th><th>Unit Price</th><th>Total Price</th></tr></thead>
-        <tbody>${jobs.map((l, i) => `<tr><td>${i + 1}</td><td>${esc(l.job_number)}</td><td>${dmy(l.job_date)}</td><td>${esc(l.do_number || "")}</td>
-          <td>${esc(l.pol)}</td><td>${esc(l.pod)}</td><td>${esc(l.plate_number || "")}</td><td>1</td>
-          <td class="num">${rp(l.job_selling)}</td><td class="num">${rp(l.job_selling)}</td></tr>`).join("")}</tbody>
+        <thead><tr><th>No</th><th>Job Number</th><th>Tanggal Jalan</th><th>Kode Tugas</th><th>Origin</th><th>Route</th><th>Plate Number</th><th>Truck Type</th><th>Total Price</th></tr></thead>
+        <tbody>${jobs.map((l, i) => `<tr><td>${i + 1}</td><td>${esc(l.job_number)}</td><td>${dmy(jamDate(l.gate_out_at) || l.job_date)}</td><td>${esc(l.do_number || "")}</td>
+          <td>${esc(l.pol)}</td><td>${esc(l.pod)}</td><td>${esc(l.plate_number || "")}</td><td>${esc(l.truck_type || "")}</td>
+          <td class="num">${rp(l.job_selling)}</td></tr>`).join("")}</tbody>
       </table>
-      <table class="inv-sum">${rows.map(([k, v]) => `<tr class="${k === "GRAND TOTAL" ? "grand" : ""}"><td>${esc(k)}</td><td class="num">${money(v)}</td></tr>`).join("")}</table>
+      <table class="inv-sum">${rows.map(([k, v]) => `<tr class="${k === "GRAND TOTAL" ? "grand" : ""}"><td class="sp"></td><td>${esc(k)}</td><td class="num">${money(v)}</td></tr>`).join("")}</table>
       <div class="inv-foot">
         <div class="inv-bank"><div>Please make your payment to the following bank account:</div>
           <table class="inv-kv"><tr><td><b>BANK NAME</b></td><td>: ${esc(m.company_bank || "")}</td></tr>
