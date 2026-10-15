@@ -86,7 +86,8 @@ importer), dan KURANG TRANSFER. Aturan ada di kepala `lib/import-jobreg.js`. Yan
   (nama, alamat, NPWP, Telp, ATTN), blok keterangan, tabel per job (Job Number, Tanggal Jalan = tanggal gate out, Kode Tugas,
   Origin, Route, Plate Number, Truck Type, Total Price), Sub Total - PPN - PPh 23 - TOTAL - DP - GRAND TOTAL, rekening tujuan,
   dan tanda tangan. Garis horizontal seperti di Excel + garis oranye di bawah kop; tulisan INVOICE di tengah tepat di atas garis
-  oranye. Rincian total, rekening, dan tanda tangan selalu di bagian bawah kertas (job sedikit: tengahnya kosong). Kop (tagline,
+  oranye. Rincian total, rekening, dan tanda tangan selalu di bagian bawah kertas (job sedikit: tengahnya kosong). Maksimal 20 job
+  per lembar A4: lebih dari itu lanjut ke lembar berikutnya (kop diulang, "Page 1 of 3", nomor urut berlanjut, total di lembar terakhir). Kop (tagline,
   alamat 2 baris), nama penanda tangan, dan gambar tanda tangan diatur ADMIN di Master Data > Perusahaan; ATTN di data partner.
   Sub Total memakai nilai saat invoice dibuat, jadi cetak ulang tetap sama walau harga job berubah.
 - **Kode tugas unik**: satu kode tugas hanya untuk satu job (one way walau banyak titik bongkar / muat; round trip cukup kode

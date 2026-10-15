@@ -444,11 +444,13 @@ td.gate-cell input[type=datetime-local]:focus { background: #fff; }
 /* tinggi satu lembar A4 (layar: kira-kira 1 halaman), rincian di bawah lewat margin-top: auto */
 .inv-doc { background: #fff; color: #000; font-family: Arial, Helvetica, sans-serif; font-size: 12px; max-width: 800px; padding: 28px 20px;
   border: 1px solid var(--line); border-radius: var(--radius); display: flex; flex-direction: column; min-height: 1060px; }
-.inv-bottom { margin-top: auto; padding-top: 12px; }
+.inv-bottom { margin-top: auto; padding-top: 8px; }
+.inv-cont { text-align: right; font-style: italic; font-size: 11px; }
+.inv-doc + .inv-doc { margin-top: 16px; }   /* layar: lembar berikutnya di bawahnya */
 /* kop: logo kiri, perusahaan kanan; INVOICE di tengah tepat di atas garis oranye */
 .inv-header { border-bottom: 3px solid #e07a28; padding-bottom: 6px; }
 .inv-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
-.inv-logo { width: 96px; height: auto; }
+.inv-logo { width: 84px; height: auto; }
 .inv-company { text-align: right; }
 .inv-co-name { font-size: 20px; font-weight: 700; }
 .inv-co-tag { font-weight: 700; font-size: 12.5px; }
@@ -462,26 +464,27 @@ td.gate-cell input[type=datetime-local]:focus { background: #fff; }
 .inv-kv td { border: 0; padding: 1px 6px 1px 0; vertical-align: top; }
 .inv-kv td:first-child { white-space: nowrap; }
 .inv-no { min-width: 230px; }
-.inv-info { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 12px; border-top: 0.5px solid #000; border-bottom: 0.5px solid #000; }
+.inv-info { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 12px; border-top: 0.5px solid #000; border-bottom: 0.5px solid #000; }
 .inv-info td { border: 0; padding: 2px 6px; }
 .inv-info td:nth-child(1), .inv-info td:nth-child(3) { width: 17%; white-space: nowrap; }
+.inv-info td:nth-child(2), .inv-info td:nth-child(4) { width: 33%; }   /* dua sisi selalu sama lebar */
 .inv-info td:nth-child(3) { border-left: 0.5px solid #000; }
 .inv-info tr.shade td { background: #fae2d5; border-bottom: 0.5px solid #000; }
 .inv-lines { width: 100%; border-collapse: collapse; font-size: 11px; border-bottom: 0.5px solid #000; }
 .inv-lines th { background: #fae2d5; color: #000; font-weight: 700; text-transform: none; letter-spacing: 0; font-size: 11px; text-align: center;
   white-space: normal; border: 0; border-top: 0.5px solid #000; border-bottom: 0.5px solid #000; padding: 5px 4px; }
-.inv-lines td { border: 0; padding: 4px; text-align: center; white-space: nowrap; }
+.inv-lines td { border: 0; padding: 3px 4px; text-align: center; white-space: nowrap; }
 .inv-lines td.num { text-align: right; }
 .inv-sum { width: 100%; margin: 8px 0 0; border-collapse: collapse; font-size: 12px; }
 .inv-sum td { border: 0; padding: 2px 8px; font-weight: 700; }
 .inv-sum td.sp { width: 58%; }
 .inv-sum td.num { font-weight: 400; text-align: right; width: 22%; }
 .inv-sum tr.grand td { border-top: 0.5px solid #000; padding-top: 4px; }
-.inv-foot { display: flex; justify-content: space-between; align-items: flex-end; gap: 24px; margin-top: 26px; }
+.inv-foot { display: flex; justify-content: space-between; align-items: flex-end; gap: 24px; margin-top: 12px; }
 .inv-bank { border-top: 0.5px solid #000; border-bottom: 0.5px solid #000; padding: 4px 0; }
 .inv-sign { text-align: center; min-width: 220px; }
-.inv-sig-img { height: 80px; display: flex; align-items: center; justify-content: center; }
-.inv-sig-img img { max-height: 80px; max-width: 200px; }
+.inv-sig-img { height: 64px; display: flex; align-items: center; justify-content: center; }
+.inv-sig-img img { max-height: 64px; max-width: 200px; }
 .inv-signer { text-decoration: underline; }
 .sig-box { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
 .sig-box img { max-height: 70px; background: #fff; border: 1px dashed var(--line-2); padding: 4px; }
@@ -491,6 +494,8 @@ td.gate-cell input[type=datetime-local]:focus { background: #fff; }
   /* kertas A4 lebih sempit dari 860px, jadi aturan layar kecil ikut terpakai dan memberi padding pada main: dinolkan,
      kalau tidak invoice meluber ke halaman kedua */
   main { padding: 0 !important; }
+  .inv-doc + .inv-doc { margin-top: 0; }
+  .inv-doc:not(.inv-last) { break-after: page; }   /* tiap lembar invoice (maks 20 job) satu halaman */
   .inv-doc { border: 0; padding: 0; max-width: none; min-height: calc(297mm - 20mm - 8mm); }   /* sisa 8 mm supaya tidak meluber ke halaman kedua */
   .inv-lines th, .inv-info tr.shade td { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 }

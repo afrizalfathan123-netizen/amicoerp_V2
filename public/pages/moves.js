@@ -388,7 +388,7 @@ export async function renderMovePrint(id) {
 function renderInvoicePrint(m, s) {
   state.cache.settings = s;
   const lines = m.lines.filter((l) => !l.cancelled_at);
-  const dmy = (v) => (v ? new Date(`${tgl(v)}T00:00:00`).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }).replace(/ /g, "-") : "");
+  const dmy = (v) => (v ? new Date(`${tgl(v)}T00:00:00`).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }).replace(/ /g, "-").replace("Sept", "Sep") : "");   // seperti Excel: 22-Sep-2026
   // satu job bisa punya lebih dari satu baris (selling tambahan): di tabel cukup satu baris per job
   const jobs = [...new Map(lines.map((l) => [l.job_id, l])).values()];
   const nowSum = jobs.reduce((a, l) => a + Number(l.job_selling || 0), 0);
@@ -423,12 +423,13 @@ function renderInvoicePrint(m, s) {
     ["Bill of Landing", "", "House/B Landing", ""], ["Vessel/Voyage", "", "AJU/PO", ""], ["POL/POD/ETD", "", "KGM/ M3", ""],
     ["Shipment Type", esc(trucks ? `Trucking ${trucks}` : "Trucking"), "Our Job No", esc(jobs.length === 1 ? jobs[0].job_number : "")],
   ];
-  view().innerHTML = `
-    <div class="page-head no-print"><a href="#/moves/${m.id}" class="btn">&larr; Kembali</a><div class="spacer"></div>
-      <span class="muted">Kertas A4 tegak. Di jendela cetak pilih "Save as PDF" untuk PDF.</span><button class="primary" onclick="window.print()">Cetak / simpan PDF</button></div>
-    ${Math.abs(sub - nowSum) >= 1 ? `<div class="note-box warn-box no-print">Selling job berubah sesudah invoice ini dibuat (sekarang ${rp(nowSum)}, saat invoice ${rp(sub)}).
-      Sub Total memakai nilai saat invoice dibuat; harga per baris di tabel memakai selling sekarang.</div>` : ""}
-    <div class="inv-doc">
+  // maksimal 20 job per lembar A4 (kop + tabel + rincian total tetap muat satu halaman); lebih dari itu lanjut ke lembar berikutnya,
+  // kop diulang, nomor urut berlanjut, rincian total & tanda tangan hanya di lembar terakhir
+  const PER_PAGE = 20;
+  const pages = [];
+  for (let i = 0; i < jobs.length || !pages.length; i += PER_PAGE) pages.push(jobs.slice(i, i + PER_PAGE));
+  const page = (part, p, last = p === pages.length - 1) => `
+    <div class="inv-doc${last ? " inv-last" : ""}">
       <div class="inv-header"><div class="inv-top">
         <img class="inv-logo" src="img/logo-amico.png" alt="AMICO">
         <div class="inv-company"><div class="inv-co-name">${esc(s.company_name || "")}</div>
@@ -440,17 +441,18 @@ function renderInvoicePrint(m, s) {
           <table class="inv-kv"><tr><td>NPWP</td><td>: ${esc(billNpwp)}</td></tr><tr><td>Telp.</td><td>: ${esc(m.partner_phone || "")}</td></tr>
             <tr><td>ATTN</td><td>: ${esc(m.partner_attn || "")}</td></tr></table></div>
         <table class="inv-kv inv-no"><tr><td>Invoice No</td><td>: <b>${esc(m.number || "(draft)")}</b></td></tr><tr><td>Date</td><td>: ${dmy(m.move_date)}</td></tr>
-          ${m.due_date ? `<tr><td>Due Date</td><td>: ${dmy(m.due_date)}</td></tr>` : ""}</table>
+          ${m.due_date ? `<tr><td>Due Date</td><td>: ${dmy(m.due_date)}</td></tr>` : ""}
+          ${pages.length > 1 ? `<tr><td>Page</td><td>: ${p + 1} of ${pages.length}</td></tr>` : ""}</table>
       </div>
       <table class="inv-info">${info.map((r, i) => `<tr class="${i === 0 ? "shade" : ""}"><td>${r[0]}</td><td>: ${r[1]}</td><td>${r[2]}</td><td>: ${r[3]}</td></tr>`).join("")}</table>
       <table class="inv-lines">
         <thead><tr><th>No</th><th>Job Number</th><th>Tanggal Jalan</th><th>Kode Tugas</th><th>Origin</th><th>Route</th><th>Plate Number</th><th>Truck Type</th><th>Total Price</th></tr></thead>
-        <tbody>${jobs.map((l, i) => `<tr><td>${i + 1}</td><td>${esc(l.job_number)}</td><td>${dmy(jamDate(l.gate_out_at) || l.job_date)}</td><td>${esc(l.do_number || "")}</td>
+        <tbody>${part.map((l, i) => `<tr><td>${p * PER_PAGE + i + 1}</td><td>${esc(l.job_number)}</td><td>${dmy(jamDate(l.gate_out_at) || l.job_date)}</td><td>${esc(l.do_number || "")}</td>
           <td>${esc(l.pol)}</td><td>${esc(l.pod)}</td><td>${esc(l.plate_number || "")}</td><td>${esc(l.truck_type || "")}</td>
           <td class="num">${rp(l.job_selling)}</td></tr>`).join("")}</tbody>
       </table>
-      <!-- rincian, rekening, tanda tangan selalu di bagian bawah kertas; job sedikit = tengah kosong -->
-      <div class="inv-bottom">
+      <!-- rincian, rekening, tanda tangan selalu di bagian bawah kertas terakhir; job sedikit = tengah kosong -->
+      ${!last ? `<div class="inv-bottom inv-cont">Continued on next page (${p + 2} of ${pages.length})</div>` : `<div class="inv-bottom">
       <table class="inv-sum">${rows.map(([k, v]) => `<tr class="${k === "GRAND TOTAL" ? "grand" : ""}"><td class="sp"></td><td>${esc(k)}</td><td class="num">${money(v)}</td></tr>`).join("")}</table>
       <div class="inv-foot">
         <div class="inv-bank"><div>Please make your payment to the following bank account:</div>
@@ -461,8 +463,14 @@ function renderInvoicePrint(m, s) {
           <div class="inv-sig-img">${s.invoice_signature ? `<img src="${esc(s.invoice_signature)}" alt="">` : ""}</div>
           <div class="inv-signer">${esc(s.invoice_signer || "")}</div><b>${esc(s.company_name || "")}</b></div>
       </div>
-      </div>
+      </div>`}
     </div>`;
+  view().innerHTML = `
+    <div class="page-head no-print"><a href="#/moves/${m.id}" class="btn">&larr; Kembali</a><div class="spacer"></div>
+      <span class="muted">Kertas A4 tegak. Di jendela cetak pilih "Save as PDF" untuk PDF.</span><button class="primary" onclick="window.print()">Cetak / simpan PDF</button></div>
+    ${Math.abs(sub - nowSum) >= 1 ? `<div class="note-box warn-box no-print">Selling job berubah sesudah invoice ini dibuat (sekarang ${rp(nowSum)}, saat invoice ${rp(sub)}).
+      Sub Total memakai nilai saat invoice dibuat; harga per baris di tabel memakai selling sekarang.</div>` : ""}
+    ${pages.map((part, p) => page(part, p)).join("")}`;
 }
 
 // Teks pengajuan untuk grup WhatsApp (format yang dipakai tim selama ini), dikelompokkan per customer & job
