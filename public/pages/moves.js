@@ -429,13 +429,12 @@ function renderInvoicePrint(m, s) {
     ${Math.abs(sub - nowSum) >= 1 ? `<div class="note-box warn-box no-print">Selling job berubah sesudah invoice ini dibuat (sekarang ${rp(nowSum)}, saat invoice ${rp(sub)}).
       Sub Total memakai nilai saat invoice dibuat; harga per baris di tabel memakai selling sekarang.</div>` : ""}
     <div class="inv-doc">
-      <div class="inv-top">
+      <div class="inv-header"><div class="inv-top">
         <img class="inv-logo" src="img/logo-amico.png" alt="AMICO">
         <div class="inv-company"><div class="inv-co-name">${esc(s.company_name || "")}</div>
           ${s.company_tagline !== "" ? `<div class="inv-co-tag">${esc(s.company_tagline ?? "Freight Forwarding & Logistics")}</div>` : ""}
           <div class="inv-co-addr">${esc(s.company_address || "")}</div></div>
-      </div>
-      <div class="inv-title">INVOICE</div>
+      </div><div class="inv-title">INVOICE</div></div>
       <div class="inv-head">
         <div class="inv-bill"><div>Bill to :</div><div class="inv-bill-name">${esc(billName)}</div><div class="inv-pre">${esc(billAddr)}</div>
           <table class="inv-kv"><tr><td>NPWP</td><td>: ${esc(billNpwp)}</td></tr><tr><td>Telp.</td><td>: ${esc(m.partner_phone || "")}</td></tr>
@@ -450,6 +449,8 @@ function renderInvoicePrint(m, s) {
           <td>${esc(l.pol)}</td><td>${esc(l.pod)}</td><td>${esc(l.plate_number || "")}</td><td>${esc(l.truck_type || "")}</td>
           <td class="num">${rp(l.job_selling)}</td></tr>`).join("")}</tbody>
       </table>
+      <!-- rincian, rekening, tanda tangan selalu di bagian bawah kertas; job sedikit = tengah kosong -->
+      <div class="inv-bottom">
       <table class="inv-sum">${rows.map(([k, v]) => `<tr class="${k === "GRAND TOTAL" ? "grand" : ""}"><td class="sp"></td><td>${esc(k)}</td><td class="num">${money(v)}</td></tr>`).join("")}</table>
       <div class="inv-foot">
         <div class="inv-bank"><div>Please make your payment to the following bank account:</div>
@@ -459,6 +460,7 @@ function renderInvoicePrint(m, s) {
         <div class="inv-sign"><div>Approved By,</div>
           <div class="inv-sig-img">${s.invoice_signature ? `<img src="${esc(s.invoice_signature)}" alt="">` : ""}</div>
           <div class="inv-signer">${esc(s.invoice_signer || "")}</div><b>${esc(s.company_name || "")}</b></div>
+      </div>
       </div>
     </div>`;
 }

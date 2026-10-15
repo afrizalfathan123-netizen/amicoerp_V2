@@ -85,7 +85,8 @@ importer), dan KURANG TRANSFER. Aturan ada di kepala `lib/import-jobreg.js`. Yan
 - **Cetak invoice customer** berformat AMICO (sama dengan Excel "INVOICE AMICO TO CUSTOMER"): logo & kop perusahaan, Bill to
   (nama, alamat, NPWP, Telp, ATTN), blok keterangan, tabel per job (Job Number, Tanggal Jalan = tanggal gate out, Kode Tugas,
   Origin, Route, Plate Number, Truck Type, Total Price), Sub Total - PPN - PPh 23 - TOTAL - DP - GRAND TOTAL, rekening tujuan,
-  dan tanda tangan. Garis horizontal seperti di Excel + garis oranye di bawah kop. Kop (tagline,
+  dan tanda tangan. Garis horizontal seperti di Excel + garis oranye di bawah kop; tulisan INVOICE di tengah tepat di atas garis
+  oranye. Rincian total, rekening, dan tanda tangan selalu di bagian bawah kertas (job sedikit: tengahnya kosong). Kop (tagline,
   alamat 2 baris), nama penanda tangan, dan gambar tanda tangan diatur ADMIN di Master Data > Perusahaan; ATTN di data partner.
   Sub Total memakai nilai saat invoice dibuat, jadi cetak ulang tetap sama walau harga job berubah.
 - **Kode tugas unik**: satu kode tugas hanya untuk satu job (one way walau banyak titik bongkar / muat; round trip cukup kode
