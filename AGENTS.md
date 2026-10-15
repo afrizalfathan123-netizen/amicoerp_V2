@@ -82,7 +82,8 @@ routes/                   satu file per area, masing-masing export default fungs
   auth.js                 /login /logout /me /users /audit
   master.js               CRUD generik (partners, partner-banks, banks, locations, vehicles, pricelist, route-sla, products)
                           + /settings + /price-lookup
-  jobs.js                 /jobs (+ /jobs/query daftar nomor tempel), detail, buat/ubah (reroute), baris order, top-up, trip
+  jobs.js                 /jobs (+ /jobs/query daftar nomor tempel), /jobs/batch (+ /check) buat banyak job dari absen,
+                          detail, buat/ubah (reroute), baris order, top-up, trip
   finance.js              /moves (invoice & pengajuan), posting, persetujuan, batal, bayar, balik bayar, transfer malam,
                           selisih tanpa tujuan, /selisih/excel. Fungsi aturan: eligible(), checkMove(), loadMove(), postMove()
   reports.js              /dashboard /rekap /billing (AR/AP per job) /aging /kurang-transfer /ledger /utang-piutang
@@ -98,7 +99,8 @@ public/
                           label (STAGE_LABEL, PHASE_LABEL, phaseLabel, SCHEME_*), cache master (state.cache), icon(),
                           latest(), skeleton()/skelTable()/skelTiles(), pagedTable() + pager
   xlfilter.js             xlTable(): tabel dengan filter & urut per kolom ala Excel, centang baris, digambar per halaman
-  wa-paste.js             parseWaJob(): baca teks WhatsApp "Label : nilai" jadi isian form Job baru (fungsi murni, ada tesnya)
+  wa-paste.js             parseWaJob(): baca teks WhatsApp "Label : nilai" jadi isian form Job baru; parseWaBatch(): absen
+                          banyak rit (judul tujuan + RIT n) jadi satu baris per rit (fungsi murni, ada tesnya)
   fox.js                  maskot rubah 8-bit di topbar (canvas, bisa dimatikan dari menu user)
   pages/*.js              satu modul per halaman, export renderXxx() dipanggil router
 db/migrations/NNN_*.sql   skema + view, berurutan, maju terus (lihat bagian 6)
@@ -260,11 +262,11 @@ npm test
 ```
 | File | Isi |
 |---|---|
-| `test/run-all.js` | alur lengkap lewat HTTP per role di PGlite memori (34 langkah, termasuk cetak invoice format AMICO, kode tugas unik, unit sewa + per periode kontrak + perpanjang + peringatan & tagihan per periode, gate dari daftar job, tanggal job salah ketik, dua orang mengedit job yang sama, cek harga jual, tempel daftar di form pengajuan, dan kompresi jawaban): job, invoice, pengajuan, bayar, transfer malam, 50/50, selisih tanpa tujuan, SJ, reroute, AR/AP, tempel daftar, export |
+| `test/run-all.js` | alur lengkap lewat HTTP per role di PGlite memori (35 langkah, termasuk cetak invoice format AMICO, kode tugas unik, buat banyak job dari absen + satu rit satu job, unit sewa + per periode kontrak + perpanjang + peringatan & tagihan per periode, gate dari daftar job, tanggal job salah ketik, dua orang mengedit job yang sama, cek harga jual, tempel daftar di form pengajuan, dan kompresi jawaban): job, invoice, pengajuan, bayar, transfer malam, 50/50, selisih tanpa tujuan, SJ, reroute, AR/AP, tempel daftar, export |
 | `test/import.test.js` | impor dari tiruan database v1 (12) |
 | `test/jobreg.test.js` | impor JOB REGISTRATION dari workbook tiruan (15) |
 | `test/joblist-v1.test.js` | impor Job List v1 (5) |
-| `test/wa-paste.test.js` | pembaca teks WhatsApp untuk form Job baru + tempel tanggal-jam (6) |
+| `test/wa-paste.test.js` | pembaca teks WhatsApp untuk form Job baru, absen banyak rit, + tempel tanggal-jam (7) |
 
 Aturan:
 - Setiap aturan bisnis baru / bug yang diperbaiki **wajib** punya langkah tes (`await step("...", async () => {...})`),

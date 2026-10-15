@@ -103,6 +103,12 @@ importer), dan KURANG TRANSFER. Aturan ada di kepala `lib/import-jobreg.js`. Yan
 - Form **Job baru**: kotak **Tempel dari WhatsApp**. Tempel teks unit dari chat (`Tanggal : ...`, `Rute : JST-SOC`, `Nama / Driver`,
   `Nopol`, `No HP`, `Kode Tugas`) dan form langsung terisi; plat yang ada di Master Kendaraan ikut mengisi jenis truk, vendor, dan
   rekeningnya. Lokasi / customer yang tidak ada di master tidak diisi asal, hanya diberi catatan.
+- Halaman Job: **Buat banyak job** dari absen WhatsApp. Judul = tujuan (mis. `KAMAL` -> DC KAMAL), lalu `RIT 1 :`, `RIT 2 :`, ...
+  masing-masing dengan Tanggal, Nopol, Nama, No Hp, Kode Tugas (boleh kosong). Customer, asal muat, lingkup, trip, harga dipilih
+  sekali untuk semua (diingat untuk berikutnya). Tabel pratinjau bisa dikoreksi; server mengecek tiap baris lalu semua dibuat
+  sekaligus (satu baris bermasalah = tidak ada yang dibuat).
+- **Satu rit = satu job**: customer + tujuan + tanggal + rit yang sama hanya boleh satu job aktif (rit berbeda boleh). Berlaku di
+  Buat banyak job, Job baru, edit job, dan membuka lagi job batal. Rit yang sudah pernah dibuat ditandai "Sudah ada" di pratinjau.
 - Form Pengajuan / Invoice baru: **Tempel daftar job** (atau tempel beberapa nomor langsung di kotak cari). Job di daftar itu saja
   yang tampil, urut sesuai tempelan dan langsung dicentang; nomor yang sudah diajukan penuh / tidak ketemu disebutkan.
 - Daftar job: filter & urut per kolom seperti Excel (klik ▾ di header), dan **Tempel daftar** no job atau kode tugas

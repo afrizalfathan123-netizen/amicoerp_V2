@@ -78,6 +78,8 @@ export function parseRoute(value) {
 }
 
 const empty = (v) => !v || /^[x\-_.\s]*$/i.test(v) || /^tidak\s*ada/i.test(v);
+// buang awalan salinan WhatsApp "[08.00, 15/10/2026] Nama: " dan bullet ("•", "・", "-", "*") di depan baris
+const cleanLine = (x) => String(x).replace(/^\s*\[\d{1,2}[.:]\d{2}[^\]]*\]\s*[^:]{1,60}:\s*/, "").replace(/^[\s*_•・·‧∙●▪◦\-–]+/, "").trim();
 
 export function parseWaJob(text, { locations = [], vehicles = [], customers = [], yearNow } = {}) {
   const fields = {};
@@ -90,7 +92,7 @@ export function parseWaJob(text, { locations = [], vehicles = [], customers = []
   const findLoc = (v) => locations.find((l) => l.active !== false && (key(l.code) === key(v) || key(l.name) === key(v)));
   const findCust = (v) => customers.find((c) => key(c.name) === key(v) || key(c.code) === key(v));
 
-  for (const line of String(text || "").replace(/\r/g, "").split("\n").map((x) => x.replace(/^[\s*_•\-]+/, "").trim()).filter(Boolean)) {
+  for (const line of String(text || "").replace(/\r/g, "").split("\n").map(cleanLine).filter(Boolean)) {
     // baris jam "20/08/2026 02:26 Selesai loading": tanggalnya dipakai kalau tidak ada baris Tanggal
     const ms = line.match(/^(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})\s+\d{1,2}[.:]\d{2}/);
     if (ms) { if (!fields._msDate) fields._msDate = parseDate(ms[1], yearNow); continue; }
@@ -173,4 +175,62 @@ export function parseWaJob(text, { locations = [], vehicles = [], customers = []
   const vehicle = fields._vehicle || null;
   delete fields._vehicle;
   return { fields, vehicle, read, warn, unknown, clear, hasData: Object.keys(fields).length > 0 };
+}
+
+// Tujuan dari judul absen: kode / nama persis, "KAMAL" -> "DC KAMAL", atau satu-satunya lokasi yang memuat kata itu
+export function findPlace(locations, value) {
+  const k = key(value);
+  if (!k) return null;
+  const act = locations.filter((l) => l.active !== false);
+  const hit = act.find((l) => key(l.code) === k || key(l.name) === k) || act.find((l) => key(l.code) === `DC${k}` || key(l.name) === `DC${k}`);
+  if (hit || k.length < 3) return hit || null;
+  const part = act.filter((l) => key(l.code).includes(k) || key(l.name).includes(k));
+  return part.length === 1 ? part[0] : null;
+}
+
+// Absen WhatsApp berisi banyak rit -> satu baris job per rit.
+//
+//   KAMAL                  <- judul = tujuan (nama customer juga boleh, mis. "FORTIS")
+//   RIT 3 :
+//    ・Tanggal : 15/10/2026
+//    ・Nopol : B 9130 FXV
+//    ・Nama : DENY
+//    ・No Hp : 085289958282
+//    ・Kode Tugas:
+//   RIT 5 : ...
+//
+// Beberapa judul (tujuan) dalam satu tempelan boleh: tiap judul berlaku untuk RIT di bawahnya. Baris "Label : isi" sebelum
+// RIT pertama (mis. Tanggal) berlaku untuk semua RIT di bawah judul itu. Isi tiap RIT dibaca dengan parseWaJob.
+export function parseWaBatch(text, master = {}) {
+  const { locations = [], customers = [] } = master;
+  const blocks = [];
+  const warn = [];
+  let place = null, placeText = "", common = [], cur = null, customer = null;
+  for (const line of String(text || "").replace(/\r/g, "").split("\n").map(cleanLine).filter(Boolean)) {
+    const rit = line.match(/^RIT\s*(?:KE\s*-?\s*)?(\d{1,2})\s*[:.=]?\s*$/i);
+    if (rit) { cur = { rit_number: Number(rit[1]), place, placeText, lines: [...common] }; blocks.push(cur); continue; }
+    if (!/[:=]/.test(line)) {
+      const c = customers.find((x) => key(x.name) === key(line) || key(x.code) === key(line));
+      if (c) { customer = c; continue; }
+      place = findPlace(locations, line);
+      placeText = line; common = []; cur = null;
+      if (!place) warn.push(`Tujuan "${line}" belum ada di Master Data > Lokasi, pilih tujuannya di tabel`);
+      continue;
+    }
+    (cur ? cur.lines : common).push(line);
+  }
+  // tanpa RIT sama sekali: seluruh teks = satu job
+  if (!blocks.length && common.length) blocks.push({ rit_number: null, place, placeText, lines: common });
+  const rows = blocks.map((bl) => {
+    const r = parseWaJob(bl.lines.join("\n"), master);
+    const f = r.fields;
+    return {
+      rit_number: bl.rit_number, pod_id: f.pod_id || bl.place?.id || "", pod_text: bl.placeText,
+      job_date: f.job_date || "", plate_number: f.plate_number || "", do_number: f.do_number || "",
+      driver1_name: f.driver1_name || "", driver1_phone: f.driver1_phone || "", driver2_name: f.driver2_name || "", driver2_phone: f.driver2_phone || "",
+      truck_type: f.truck_type || r.vehicle?.truck_type || "", vendor_id: r.vehicle?.owner_partner_id || "", known_plate: !!r.vehicle,
+      warn: r.warn,
+    };
+  });
+  return { rows, warn, customer_id: customer?.id || "" };
 }

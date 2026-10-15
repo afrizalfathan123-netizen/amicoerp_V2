@@ -1,7 +1,7 @@
 // Tes pembaca teks WhatsApp untuk form Job baru (public/wa-paste.js). Fungsi murni, tanpa database.
 //   node test/wa-paste.test.js
 import assert from "node:assert/strict";
-import { parseWaJob, parseDate, parseDateTime, normPlate, normPhone, parseRoute } from "../public/wa-paste.js";
+import { parseWaJob, parseWaBatch, findPlace, parseDate, parseDateTime, normPlate, normPhone, parseRoute } from "../public/wa-paste.js";
 
 const master = {
   locations: [{ id: 1, code: "JST", name: "Jakarta Selatan" }, { id: 2, code: "SOC", name: "Solo" }, { id: 3, code: "JAT", name: "Jatake" },
@@ -95,6 +95,25 @@ step("tempel tanggal-jam gaya Excel / WhatsApp ke kotak gate", () => {
   // tahun 3 angka = salah ketik: ditolak, bukan ditebak jadi tanggal lain
   assert.equal(parseDateTime("14/10/202 03:32"), null);
   assert.equal(parseDate("14/10/202"), "");
+});
+
+step("absen banyak rit: judul = tujuan, satu baris per RIT, bullet WhatsApp, kode tugas kosong", () => {
+  const m = { ...master, locations: [...master.locations, { id: 21, code: "DC KAMAL", name: "DC KAMAL" }, { id: 22, code: "DC MAKASAR", name: "DC MAKASAR" }],
+    vehicles: [...master.vehicles, { id: 8, plate_number: "B 9130 FXV", truck_type: "CDDL", owner_partner_id: 6 }] };
+  const rit = (n, tgl) => `RIT ${n} :\n  ・Tanggal : ${tgl}\n  ・Nopol : B 9130 FXV\n  ・Nama : DENY\n  ・No Hp : 085289958282\n  ・Kode Tugas:`;
+  const r = parseWaBatch(`KAMAL\n\n${rit(3, "15/10/2026")}\n\n${rit(5, "15/10/2026")}\n${rit(1, "16/10/2026")}`, m);
+  assert.deepEqual(r.rows.map((x) => [x.rit_number, x.pod_id, x.job_date]), [[3, 21, "2026-10-15"], [5, 21, "2026-10-15"], [1, 21, "2026-10-16"]]);
+  assert.deepEqual(r.rows[0], { rit_number: 3, pod_id: 21, pod_text: "KAMAL", job_date: "2026-10-15", plate_number: "B 9130 FXV", do_number: "",
+    driver1_name: "DENY", driver1_phone: "085289958282", driver2_name: "", driver2_phone: "", truck_type: "CDDL", vendor_id: 6, known_plate: true, warn: [] });
+  assert.equal(r.warn.length, 0);
+  // salinan beberapa pesan WhatsApp ("[08.00, 15/10/2026] Admin: ..."), dua tujuan, tanggal bersama di bawah judul, customer di judul
+  const r2 = parseWaBatch(`[08.00, 15/10/2026] Admin: SERYU\n[08.00, 15/10/2026] Admin: MAKASAR\nTanggal : 17/10/2026\nRIT 1:\nNopol : B 1 AB\nKode tugas : zx 01\nRIT 2 :\nNopol : B 2 AB\nANTAH\nRIT 1 :\nNopol : B 3 AB`, m);
+  assert.equal(r2.customer_id, 11);
+  assert.deepEqual(r2.rows.map((x) => [x.rit_number, x.pod_id, x.job_date, x.plate_number, x.do_number, x.known_plate]),
+    [[1, 22, "2026-10-17", "B 1 AB", "ZX01", false], [2, 22, "2026-10-17", "B 2 AB", "", false], [1, "", "", "B 3 AB", "", false]]);
+  assert.match(r2.warn[0], /ANTAH/);
+  assert.equal(findPlace(m.locations, "dc kamal").id, 21);
+  assert.equal(findPlace(m.locations, "XY"), null);
 });
 
 console.log(`Tempel WhatsApp: ${passed} langkah lulus`);

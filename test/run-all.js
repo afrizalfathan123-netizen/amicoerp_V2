@@ -792,6 +792,42 @@ try {
     assert.ok((await viewer.call("POST", "/moves/eligible", { move_type: "in_invoice", phase })).length >= rows.length);
   });
 
+  await step("buat banyak job dari absen: satu rit = satu job (customer + tujuan + tanggal), pratinjau, semua atau tidak sama sekali", async () => {
+    const rit = (n, extra) => ({ job_date: "2026-10-10", customer_id: id.KOTA, pol_id: id.CKR, pod_id: id.CKG, trip_type: "ONE_WAY",
+      delivery_scope: "INNERCITY", truck_type: "CDDL", rit_number: n, plate_number: "b 9123 abc", vendor_id: id.SINAR, driver1_name: "DENY", ...extra });
+    assert.match(await viewer.call("POST", "/jobs/batch/check", { jobs: [rit(1)] }, 403), /akses/);
+    // pratinjau: tidak menyimpan, harga dari price book, dobel di tempelan yang sama ditandai
+    const chk = await ops.call("POST", "/jobs/batch/check", { jobs: [rit(1), rit(2), rit(2), rit(3, { do_number: "ABS-1" }), rit(4, { do_number: "abs-1" })] });
+    assert.deepEqual(chk.map((x) => x.problems.length > 0), [false, false, true, false, true]);
+    assert.match(chk[2].problems[0], /dobel dengan baris 2/);
+    assert.match(chk[4].problems[0], /dobel dengan baris 4/);
+    assert.equal(chk[0].selling, 2000000);
+    // satu baris bermasalah = tidak ada yang dibuat
+    const before = (await viewer.call("GET", "/jobs?limit=5000")).length;
+    assert.match(await ops.call("POST", "/jobs/batch", { jobs: [rit(1), rit(1)] }, 400), /Tidak ada job yang dibuat/);
+    assert.equal((await viewer.call("GET", "/jobs?limit=5000")).length, before);
+    const res = await ops.call("POST", "/jobs/batch", { jobs: [rit(1), rit(2), rit(3, { do_number: "ABS-1" })] });
+    assert.equal(res.created.length, 3);
+    const d1 = await fin.call("GET", `/jobs/${res.created[0].id}`);
+    assert.deepEqual([d1.job.rit_number, d1.job.plate_number, d1.job.customer_scheme, d1.balance.selling, d1.balance.cost], [1, "B 9123 ABC", "FULL", 2000000, 1700000]);
+    assert.ok(d1.audit.some((a) => a.action === "create" && a.detail.via === "absen"));
+    // absen yang sama ditempel lagi: rit yang sudah dibuat ditandai, rit baru siap
+    const again = await ops.call("POST", "/jobs/batch/check", { jobs: [rit(1), rit(2), rit(5)] });
+    assert.equal(again[0].existing.job_number, res.created[0].job_number);
+    assert.match(again[1].problems[0], /Rit 2 ke CKG tanggal 10\/10\/2026 sudah dibuat/);
+    assert.deepEqual(again[2].problems, []);
+    // job satuan juga ditolak; tanggal lain boleh
+    assert.match(await ops.call("POST", "/jobs", rit(1), 400), /Satu rit hanya untuk satu job/);
+    await ops.call("POST", "/jobs", rit(1, { job_date: "2026-10-11" }));
+    // edit ke rit yang sudah dipakai ditolak; job batal tidak dihitung; job batal dibuka lagi ditolak kalau ritnya sudah dipakai
+    const [a, b] = res.created;
+    const v = (await ops.call("GET", `/jobs/${b.id}`)).job.version;
+    assert.match(await ops.call("PUT", `/jobs/${b.id}`, { rit_number: 1, expected_version: v }, 400), /sudah dibuat/);
+    await ops.call("POST", `/jobs/${a.id}/state`, { state: "cancelled", reason: "salah input" });
+    await ops.call("PUT", `/jobs/${b.id}`, { rit_number: 1, expected_version: v });
+    assert.match(await ops.call("POST", `/jobs/${a.id}/state`, { state: "confirmed" }, 400), /sudah dibuat/);
+  });
+
   await step("ringan: jawaban dikompresi, file tampilan tanpa cek sesi, ringkasan status cocok dengan daftar job", async () => {
     const root = base.replace(/\/api$/, "");
     const login = await fetch(`${base}/login`, { method: "POST", headers: { "Content-Type": "application/json" },

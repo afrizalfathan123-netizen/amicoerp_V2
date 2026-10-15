@@ -423,6 +423,16 @@ html.busy::before { opacity: 1; transition: opacity .15s .25s; animation: progre
 .wa-foot { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: flex-start; margin-top: 8px; font-size: 12.5px; }
 .wa-foot #waInfo { flex: 1; min-width: 220px; }
 .ok-text { color: var(--olive-ink); }
+/* Buat banyak job: tabel pratinjau yang bisa diketik langsung */
+.batch-table td { vertical-align: top; padding: 4px 6px; font-size: 12.5px; }
+.batch-table input:not([type=checkbox]), .batch-table select { width: 100%; min-width: 90px; padding: 4px 6px; font-size: 12.5px; }
+.batch-table input.b-rit { min-width: 52px; width: 56px; }
+.batch-table input[type=date] { min-width: 128px; }
+.batch-table input.b-plate { min-width: 108px; }
+.batch-table select { min-width: 140px; }
+.batch-table td.b-unit { white-space: normal; min-width: 110px; }
+.batch-table td.b-st { min-width: 170px; max-width: 260px; white-space: normal; }
+.batch-table tr.muted-row td { opacity: .55; }
 input.wa-filled, select.wa-filled { border-color: var(--olive); background: #f6f8ec; }
 
 /* ---------------- gate out / gate in langsung di daftar job ---------------- */

@@ -10,6 +10,7 @@ import { ledgerTable, shortPanel } from "./reports.js";
 import { unassignedTable } from "./unassigned.js";
 import { xlTable } from "../xlfilter.js";
 import { parseWaJob } from "../wa-paste.js";
+import { batchJobForm } from "./jobs-batch.js";
 
 const SCOPE = { INTERCITY: "Antar kota", INNERCITY: "Dalam kota" };
 const TRIP = { ONE_WAY: "One way", ROUND_TRIP: "PP / round trip" };
@@ -78,7 +79,8 @@ export async function renderJobs() {
     <div class="page-head"><h1>Job</h1><div class="spacer"></div>
       <div class="actions"><a class="btn" id="exportJobs" title="Export job yang tampil di tabel">Export Excel</a>
         ${isAdmin() ? `<label class="btn" style="flex-direction:row" title="Lengkapi job dari export Job List ERP AMICO v1 (driver, gate, SJ, vendor, rekening) dan tambah job yang belum ada">Impor Job List v1<input type="file" id="importV1" accept=".xlsx" hidden></label>` : ""}
-        ${canJob() ? `<button class="primary" id="newJob">+ Job baru</button>` : ""}</div></div>
+        ${canJob() ? `<button id="batchJob" title="Tempel absen WhatsApp (RIT 1, RIT 2, ...): satu job per rit">Buat banyak job</button>
+          <button class="primary" id="newJob">+ Job baru</button>` : ""}</div></div>
     <div class="tiles" id="stageTiles">${skelTiles(7)}</div>
     <div class="panel">
       <div class="filters">
@@ -95,6 +97,7 @@ export async function renderJobs() {
       <div id="jobTable">${skelTable(10, 8)}</div>
     </div>`;
   document.getElementById("newJob")?.addEventListener("click", () => jobForm());
+  document.getElementById("batchJob")?.addEventListener("click", () => batchJobForm());
   const el = (id) => document.getElementById(id);
   const topIds = ["jSearch", "jStage", "jState", "jScope", "jFrom", "jTo"];
   // urutan bawaan: sesuai urutan tempelan kalau sedang memakai daftar tempel

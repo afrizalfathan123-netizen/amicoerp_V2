@@ -50,6 +50,68 @@ async function assertUniqueDo(t, doNumber, jobId = 0) {
   if (dup) fail(`Kode tugas ${key} sudah dipakai ${dup.job_number}. Satu kode tugas hanya untuk satu job.`);
 }
 
+// Rit dalam kota: satu customer + tujuan + tanggal + rit = satu job. Rit berbeda boleh di tanggal & tujuan yang sama.
+// Absen "KAMAL - RIT 3" yang sudah pernah dibuat jadi job ditolak, supaya tidak ada job dobel. Job batal tidak dihitung.
+async function findRitJob(t, { customer_id, pod_id, job_date, rit_number }, jobId = 0) {
+  if (!Number(rit_number) || !customer_id || !pod_id || !job_date) return null;
+  const [dup] = await t.query(
+    `select j.id, j.job_number, j.plate_number, j.driver1_name, ld.code as pod from job j join location ld on ld.id = j.pod_id
+     where j.id <> $1 and j.state <> 'cancelled' and j.customer_id = $2 and j.pod_id = $3 and j.job_date = $4 and j.rit_number = $5
+     order by j.id limit 1`, [jobId, Number(customer_id), Number(pod_id), String(job_date).slice(0, 10), Number(rit_number)]);
+  return dup || null;
+}
+const dmy = (v) => String(v).slice(0, 10).split("-").reverse().join("/");
+const ritMsg = (d, row) => `Rit ${Number(row.rit_number)} ke ${d.pod} tanggal ${dmy(row.job_date)} sudah dibuat: ${d.job_number}${d.plate_number ? ` (${d.plate_number})` : ""}. Satu rit hanya untuk satu job.`;
+async function assertUniqueRit(t, row, jobId = 0) {
+  if (!Number(row.rit_number)) return;
+  // dua orang membuat rit yang sama bersamaan: yang kedua menunggu lalu ditolak
+  await t.query("select pg_advisory_xact_lock(hashtext($1))",
+    [`rit:${Number(row.customer_id)}:${Number(row.pod_id)}:${String(row.job_date).slice(0, 10)}:${Number(row.rit_number)}`]);
+  const d = await findRitJob(t, row, jobId);
+  if (d) fail(ritMsg(d, row));
+}
+
+// Baris "Buat banyak job"
+const batchRows = (body) => {
+  const rows = Array.isArray(body?.jobs) ? body.jobs : [];
+  if (!rows.length) fail("Belum ada baris job");
+  if (rows.length > 200) fail("Maksimal 200 job sekali buat");
+  return rows;
+};
+// Cek semua baris tanpa menyimpan: data wajib, tanggal, rit / kode tugas yang sudah dipakai (di database atau dobel di
+// tempelan yang sama), dan harga. Hasil per baris: { row, problems, existing (job rit yang sama), selling, cost }.
+async function checkBatch(q, rows) {
+  const seenRit = new Map(), seenDo = new Map();
+  const out = [];
+  for (const [i, b] of rows.entries()) {
+    const problems = [];
+    let existing = null, selling = null, cost = null;
+    const missing = [["job_date", "tanggal"], ["customer_id", "customer"], ["pol_id", "asal muat"], ["pod_id", "tujuan"], ["truck_type", "jenis truk"]]
+      .filter(([f]) => !b[f]).map(([, l]) => l);
+    if (missing.length) problems.push(`${missing.join(", ")} belum diisi`);
+    if (b.job_date) try { checkJobDate(b.job_date); } catch (e) { problems.push(e.message); }
+    if (Number(b.rit_number) && b.customer_id && b.pod_id && b.job_date) {
+      existing = await findRitJob(q, b);
+      if (existing) problems.push(ritMsg(existing, b));
+      const k = [Number(b.customer_id), Number(b.pod_id), String(b.job_date).slice(0, 10), Number(b.rit_number)].join(":");
+      if (seenRit.has(k)) problems.push(`Rit ${Number(b.rit_number)} dobel dengan baris ${seenRit.get(k) + 1} (tanggal & tujuan sama)`);
+      else seenRit.set(k, i);
+    }
+    if (!isPlaceholderDo(b.do_number)) {
+      const key = normDo(b.do_number);
+      const [dup] = await q.query(`select j.job_number from job j where j.state <> 'cancelled' and ${DO_KEY} = $1 order by j.id limit 1`, [key]);
+      if (dup) problems.push(`Kode tugas ${key} sudah dipakai ${dup.job_number}`);
+      if (seenDo.has(key)) problems.push(`Kode tugas ${key} dobel dengan baris ${seenDo.get(key) + 1}`);
+      else seenDo.set(key, i);
+    }
+    if (!missing.length) {
+      try { ({ selling, cost } = await resolveAmounts(q, b)); } catch (e) { problems.push(e.message); }
+    }
+    out.push({ row: i, problems, existing, selling, cost });
+  }
+  return out;
+}
+
 const productId = async (t, kind) => (await t.query("select id from product where kind = $1", [kind]))[0].id;
 
 // Rekening baru langsung dari form job (pemilik rekening boleh beda dengan vendor, mis. PT ABC -> rekening Fulan)
@@ -155,6 +217,31 @@ async function listJobs(db, q) {
      order by j.job_date desc, j.id desc limit ${limit} offset ${offset}`, params);
 }
 
+// Buat satu job (form Job baru dan Buat banyak job memakai jalur yang sama, jadi aturannya sama persis)
+async function createJob(t, req, b, extra = {}) {
+  for (const f of ["job_date", "customer_id", "pol_id", "pod_id", "truck_type"]) if (!b[f]) fail(`${f} wajib diisi`);
+  checkJobDate(b.job_date);
+  await assertUniqueDo(t, b.do_number);
+  await assertUniqueRit(t, b);
+  const { mode, selling, cost } = await resolveAmounts(t, b);
+  const yymm = String(b.job_date).slice(2, 4) + String(b.job_date).slice(5, 7);
+  const row = pick(b, HEADER_FIELDS);
+  row.job_number = b.job_number ? String(b.job_number).trim() : await nextNumber(t, `JOB/${yymm}`, `AMC/${yymm}/`);
+  row.selling_mode = mode;
+  await defaultSchemes(t, row);
+  await newVendorBank(t, b, b.vendor_id);
+  if (row.plate_number) row.plate_number = String(row.plate_number).trim().toUpperCase();
+  row.created_by = req.user.id;
+  const id = await insertRow(t, "job", row);
+  await insertRow(t, "job_line", { job_id: id, side: "SALE", product_id: await productId(t, "TRUCKING"),
+    partner_id: Number(b.customer_id), description: "Jasa trucking", amount: selling });
+  await insertRow(t, "job_line", { job_id: id, side: "PURCHASE", product_id: await productId(t, "TRUCKING"),
+    partner_id: b.vendor_id ? Number(b.vendor_id) : null, partner_bank_id: b.vendor_bank_id ? Number(b.vendor_bank_id) : null,
+    description: "Sewa truk", amount: cost });
+  await audit(t, req, "job", id, "create", { job_number: row.job_number, selling, cost, ...extra });
+  return { id, job_number: row.job_number };
+}
+
 export default function jobRoutes(db) {
   const r = express.Router();
 
@@ -235,28 +322,18 @@ export default function jobRoutes(db) {
     };
   }));
 
-  r.post("/jobs", requireRole(ROLES.JOB_EDIT), route((req) => db.tx(async (t) => {
-    const b = req.body || {};
-    for (const f of ["job_date", "customer_id", "pol_id", "pod_id", "truck_type"]) if (!b[f]) fail(`${f} wajib diisi`);
-    checkJobDate(b.job_date);
-    await assertUniqueDo(t, b.do_number);
-    const { mode, selling, cost } = await resolveAmounts(t, b);
-    const yymm = String(b.job_date).slice(2, 4) + String(b.job_date).slice(5, 7);
-    const row = pick(b, HEADER_FIELDS);
-    row.job_number = b.job_number ? String(b.job_number).trim() : await nextNumber(t, `JOB/${yymm}`, `AMC/${yymm}/`);
-    row.selling_mode = mode;
-    await defaultSchemes(t, row);
-    await newVendorBank(t, b, b.vendor_id);
-    if (row.plate_number) row.plate_number = String(row.plate_number).trim().toUpperCase();
-    row.created_by = req.user.id;
-    const id = await insertRow(t, "job", row);
-    await insertRow(t, "job_line", { job_id: id, side: "SALE", product_id: await productId(t, "TRUCKING"),
-      partner_id: Number(b.customer_id), description: "Jasa trucking", amount: selling });
-    await insertRow(t, "job_line", { job_id: id, side: "PURCHASE", product_id: await productId(t, "TRUCKING"),
-      partner_id: b.vendor_id ? Number(b.vendor_id) : null, partner_bank_id: b.vendor_bank_id ? Number(b.vendor_bank_id) : null,
-      description: "Sewa truk", amount: cost });
-    await audit(t, req, "job", id, "create", { job_number: row.job_number, selling, cost });
-    return { id, job_number: row.job_number };
+  r.post("/jobs", requireRole(ROLES.JOB_EDIT), route((req) => db.tx((t) => createJob(t, req, req.body || {}))));
+
+  // Buat banyak job sekaligus dari absen WhatsApp (satu baris per rit). Pratinjau dulu (check), lalu buat:
+  // satu baris saja bermasalah = tidak ada yang dibuat, supaya tidak ada absen yang setengah masuk.
+  r.post("/jobs/batch/check", requireRole(ROLES.JOB_EDIT), route((req) => checkBatch(db, batchRows(req.body))));
+  r.post("/jobs/batch", requireRole(ROLES.JOB_EDIT), route((req) => db.tx(async (t) => {
+    const rows = batchRows(req.body);
+    const bad = (await checkBatch(t, rows)).filter((x) => x.problems.length);
+    if (bad.length) fail(`${bad.length} baris belum bisa dibuat (baris ${bad[0].row + 1}: ${bad[0].problems[0]}). Tidak ada job yang dibuat.`);
+    const created = [];
+    for (const b of rows) created.push(await createJob(t, req, b, { via: "absen" }));
+    return { created };
   })));
 
   // Ubah job, termasuk ganti rute / truk (harga dihitung ulang). Nominal tidak boleh turun di bawah yang sudah ditagih/diajukan.
@@ -276,6 +353,10 @@ export default function jobRoutes(db) {
     if ("job_date" in b && String(b.job_date).slice(0, 10) !== String(job.job_date).slice(0, 10)) checkJobDate(b.job_date);
     // hanya dicek kalau kode tugasnya diganti, supaya job lama yang terlanjur dobel tetap bisa diedit (dan dibetulkan)
     if ("do_number" in b && normDo(b.do_number) !== normDo(job.do_number)) await assertUniqueDo(t, b.do_number, id);
+    // rit: dicek kalau customer / tujuan / tanggal / rit-nya diganti (sama seperti kode tugas)
+    if (["customer_id", "pod_id", "job_date", "rit_number"].some((k) => k in b && String(b[k] ?? "").slice(0, 10) !== String(job[k] ?? "").slice(0, 10))) {
+      await assertUniqueRit(t, { ...job, ...b }, id);
+    }
     const merged = { ...job, ...b, selling_mode: b.selling_mode || job.selling_mode };
     await newVendorBank(t, b, merged.vendor_id);
     const row = pick(b, HEADER_FIELDS);
@@ -352,8 +433,8 @@ export default function jobRoutes(db) {
     const { state, reason } = req.body || {};
     // job batal dibuka lagi: kode tugasnya bisa saja sudah dipakai job pengganti
     if (state !== "cancelled") {
-      const [cur] = await t.query("select state, do_number from job where id = $1", [id]);
-      if (cur?.state === "cancelled") await assertUniqueDo(t, cur.do_number, id);
+      const [cur] = await t.query("select state, do_number, customer_id, pod_id, job_date, rit_number from job where id = $1", [id]);
+      if (cur?.state === "cancelled") { await assertUniqueDo(t, cur.do_number, id); await assertUniqueRit(t, cur, id); }
     }
     if (!["confirmed", "done", "cancelled"].includes(state)) fail("State tidak dikenal");
     if (state === "cancelled") {
