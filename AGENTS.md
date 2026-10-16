@@ -43,7 +43,7 @@ npm test                       # semua tes (lihat bagian 8)
 npm run db:migrate             # jalankan migrasi saja
 npm run user:add -- admin "Nama Admin" ADMIN   # user dari terminal (password diketik, tidak tampil)
 npm run pindah:postgres -- --pratinjau          # pindah data data/pg -> DATABASE_URL (lihat bagian 10)
-npm run import:jobreg -- "<file.xlsx>" --mulai AMC/2607/0001
+npm run import:jobreg -- "<file.xlsx>" --mulai AMC/2607/0001 [--reset] [--joblist "<export Job List v1.xlsx>"]
 npm run import:joblist-v1 -- "<file.xlsx>" --pratinjau
 npm run import:amico            # dari database ERP AMICO v1 (AMICO_DB_URL, hanya dibaca)
 npm run export:all              # semua data ke Excel
@@ -264,7 +264,7 @@ npm test
 |---|---|
 | `test/run-all.js` | alur lengkap lewat HTTP per role di PGlite memori (35 langkah, termasuk cetak invoice format AMICO, kode tugas unik, buat banyak job dari absen + satu rit satu job, unit sewa + per periode kontrak + perpanjang + peringatan & tagihan per periode, gate dari daftar job, tanggal job salah ketik, dua orang mengedit job yang sama, cek harga jual, tempel daftar di form pengajuan, dan kompresi jawaban): job, invoice, pengajuan, bayar, transfer malam, 50/50, selisih tanpa tujuan, SJ, reroute, AR/AP, tempel daftar, export |
 | `test/import.test.js` | impor dari tiruan database v1 (12) |
-| `test/jobreg.test.js` | impor JOB REGISTRATION dari workbook tiruan (15) |
+| `test/jobreg.test.js` | impor JOB REGISTRATION dari workbook tiruan, termasuk reset yang menjaga sewa / rekening / ATTN dan kode tugas dobel dari Job List v1 (17) |
 | `test/joblist-v1.test.js` | impor Job List v1 (5) |
 | `test/wa-paste.test.js` | pembaca teks WhatsApp untuk form Job baru, absen banyak rit, + tempel tanggal-jam (7) |
 

@@ -199,7 +199,7 @@ await step("impor kedua ditolak kalau database sudah berisi job", async () => {
   await assert.rejects(importJobReg({ file, target: db, log: () => {} }), /sudah berisi 5 job/);
 });
 
-await step("impor ulang dengan reset: unit, kontrak & tagihan sewa, SLA, price book yang diisi di ERP tetap ada", async () => {
+await step("impor ulang dengan reset: unit, kontrak & tagihan sewa, SLA, price book, kas operasional, ATTN partner tetap ada", async () => {
   const [{ jobs }] = await db.query("select count(*)::int as jobs from job");
   const loc = async (code) => (await db.query("insert into location (code, name) values ($1, $1) on conflict (code) do update set code = excluded.code returning id", [code]))[0].id;
   const [v] = await db.query("insert into vehicle (plate_number, truck_type) values ('B 7777 SW', 'CDDL') returning id");
@@ -210,8 +210,18 @@ await step("impor ulang dengan reset: unit, kontrak & tagihan sewa, SLA, price b
   await db.query("insert into vehicle_rent_payment (bill_id, pay_date, amount, bank_account_id) values ($1, '2026-10-01', 5000000, $2)", [b.id, bank.id]);
   await db.query("insert into route_sla (pol_id, pod_id, trip_type, sla_hours) values ($1, $2, 'ONE_WAY', 19)", [await loc("SLA-A"), await loc("SLA-B")]);
   await db.query("insert into pricelist_item (pol_id, pod_id, truck_type, trip_type, selling, cost) values ($1, $2, 'CDDL', 'ONE_WAY', 900000, 700000)", [await loc("SLA-A"), await loc("SLA-B")]);
+  await db.query("insert into res_bank_account (name, bank_name, account_number, holder, kind) values ('Kas Ops', 'BCA', '77', 'Ops', 'OPERATIONAL')");
+  await db.query("update res_partner set attn = 'Pak Budi', phone = '021-1' where name = 'GARBANTARA'");
+  await db.query("insert into res_partner_bank (partner_id, bank_name, account_number, holder) values ($1, 'BRI', '555', 'Pemilik')", [vend.id]);
+  const banks = (await db.query("select count(*)::int as n from res_bank_account"))[0].n;
   const again = await importJobReg({ file, target: db, start: "AMC/2607/0001", reset: true, log: () => {} });
-  assert.deepEqual(again.stats.erpKept, { unit: 1, kontrak: 1, tagihan_sewa: 1, bayar_sewa: 1, sla: 1, price_book: 1 });
+  assert.deepEqual(again.stats.erpKept, { unit: 1, kontrak: 1, tagihan_sewa: 1, bayar_sewa: 1, sla: 1, price_book: 1,
+    rekening_amico: banks, isian_partner: 1, rekening_partner: 1 });
+  // rekening AMICO & kas operasional persis, tidak ada "Rekening AMICO (impor JOB REG)" baru
+  assert.equal((await db.query("select count(*)::int as n from res_bank_account"))[0].n, banks);
+  assert.equal((await db.query("select count(*)::int as n from res_bank_account where name = 'Kas Ops' and kind = 'OPERATIONAL'"))[0].n, 1);
+  assert.deepEqual(Object.values((await db.query("select attn, phone from res_partner where name = 'GARBANTARA'"))[0]), ["Pak Budi", "021-1"]);
+  assert.equal((await db.query("select count(*)::int as n from res_partner_bank b join res_partner p on p.id = b.partner_id where p.name = 'PEMILIK UNIT' and b.account_number = '555'"))[0].n, 1);
   assert.equal((await db.query("select count(*)::int as n from job"))[0].n, jobs);
   const [k] = await db.query(`select v.plate_number, p.name, c.monthly_rent from vehicle_contract c join vehicle v on v.id = c.vehicle_id
     left join res_partner p on p.id = c.partner_id`);
@@ -229,6 +239,36 @@ await step("laporan Excel ditulis", async () => {
   await rep.xlsx.readFile(out);
   assert.deepEqual(rep.worksheets.map((w) => w.name), ["RINGKASAN", "PERLU DICEK", "KURANG TRANSFER"]);
   assert.equal(rep.getWorksheet("KURANG TRANSFER").rowCount, 2);
+});
+
+await step("kode tugas dobel di FINANCE diambil dari Job List v1, berantai sampai tidak bentrok", async () => {
+  // FINANCE: 0002 memakai kode 0001 (dobel); menurut v1 0002 = K2, padahal K2 milik 0003 di FINANCE -> 0003 ikut ke K3 (v1).
+  // 0005 & 0006 dobel K5 dan v1 juga K5 untuk keduanya -> tetap dobel, dicatat.
+  const w = new ExcelJS.Workbook();
+  const add = (name, headerRow, headers, rows) => { const ws = w.addWorksheet(name); ws.getRow(headerRow).values = headers; rows.forEach((r, i) => { ws.getRow(headerRow + 1 + i).values = r; }); };
+  const row = (n, d) => [D("2026-10-01"), `AMC/2610/000${n}`, d, "FORTIS", "JAT", "DC KAMAL", "CDDL", `B ${n} X`, 100, null, 200, 200];
+  add("FINANCE", 12, ["DATE", "JOB NUMBER", "DO NUMBER", "CUSTOMER", "POL", "POD", "TRUCK TYPE", "PLATE NUMBER", "COST", "CALO", "SELLING", "SELLING AFTER TAX",
+    "PROFIT", "PERSENTASE", "VENDOR BILL 70%", "DATE 70%", "VENDOR BILL 30%", "DATE 30%", "REGISTER PAYMENT 70%", "DATE 70%", "REGISTER PAYMENT 30%", "DATE 30%"],
+    [row(1, "K1"), row(2, "K1"), row(3, "K2"), row(4, "K9"), row(5, "K5"), row(6, "k 5")]);
+  add("JOB LIST", 12, ["DATE", "GATE OUT", "GATE IN", "JOB NUMBER"], []);
+  add("UTANG PIUTANG", 7, ["JOB NUMBER", "UTANG 100% TERBAYAR", "UTANG 70% TERBAYAR", "UTANG 30% TERBAYAR", "PIUTANG 100% TERBAYAR", "PIUTANG 70% TERBAYAR", "PIUTANG 30% TERBAYAR"], []);
+  const f2 = path.join(dir, "JOB REG 2.xlsx");
+  await w.xlsx.writeFile(f2);
+  const v1 = new ExcelJS.Workbook();
+  const ws = v1.addWorksheet("JOB LIST");
+  ws.addRow(["DATE", "JOB NUMBER", "SJ NUMBER"]);
+  for (const [n, sj] of [[1, "K1"], [2, "K2"], [3, "K3"], [4, "K9"], [5, "K5"], [6, "K5"]]) ws.addRow([D("2026-10-01"), `AMC/2610/000${n}`, sj]);
+  const f3 = path.join(dir, "job-list-v1.xlsx");
+  await v1.xlsx.writeFile(f3);
+  const db2 = await openDb({ memory: true });
+  await migrate(db2, { log: () => {} });
+  const r = await importJobReg({ file: f2, target: db2, joblist: f3, log: () => {} });
+  const codes = Object.fromEntries((await db2.query("select job_number, do_number from job order by 1")).map((j) => [j.job_number.slice(-1), j.do_number]));
+  assert.deepEqual(codes, { 1: "K1", 2: "K2", 3: "K3", 4: "K9", 5: "K5", 6: "k 5" });
+  assert.deepEqual([r.stats.doFixed, r.stats.doStillDup], [2, 2]);
+  assert.ok(r.issues.some((i) => i.job === "AMC/2610/0003" && /Diganti dari Job List v1 \(SJ NUMBER\): K3/.test(i.tindakan)));
+  assert.equal(r.issues.filter((i) => /tetap dobel/.test(i.masalah)).length, 2);
+  await db2.close();
 });
 
 await db.close();

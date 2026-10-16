@@ -53,10 +53,16 @@ Aturan pindah data ada di `db/import/amico_import.sql`. Yang penting:
 ## Impor dari Excel JOB REGISTRATION
 
 ```bash
-npm run import:jobreg -- "C:\path\JOB REGISTRATION.xlsx" --mulai AMC/2607/0001
+npm run import:jobreg -- "C:\path\JOB REGISTRATION.xlsx" --mulai AMC/2607/0001 --reset --joblist "C:\path\job-list-semua.xlsx"
+npm run import:joblist-v1 -- "C:\path\job-list-semua.xlsx" --timpa
 ```
-`--reset` mengosongkan data bisnis dulu (user & pengaturan tetap). Data yang diisi di ERP dan tidak ada di Excel (unit,
-kontrak & tagihan sewa, SLA rute, price book) disimpan lalu dipasang lagi otomatis; semuanya satu transaksi (gagal = tidak berubah). File Excel hanya dibaca. Laporan
+`--reset` mengosongkan data bisnis dulu (user & pengaturan tetap). Sebelum konfirmasi "HAPUS" ditampilkan apa yang tetap
+dan apa yang hilang (job / dokumen / pembayaran yang dibuat di aplikasi, transfer malam, pengiriman SJ, update posisi).
+Data yang diisi di ERP dan tidak ada di Excel (unit, kontrak & tagihan & pembayaran sewa, SLA rute, price book, rekening
+AMICO & kas operasional, kontak / ATTN / skema partner, rekening partner) disimpan lalu dipasang lagi otomatis; jumlah &
+total sewa dicocokkan dengan sebelum reset (beda = impor dibatalkan). Semuanya satu transaksi (gagal = tidak berubah).
+`--joblist`: kode tugas yang dobel di FINANCE diambil dari SJ NUMBER export Job List ERP v1 (di v1 kolom itu berisi kode
+tugas), berantai kalau kode v1 itu dipakai job lain; yang tetap dobel muncul di menu Sisihkan. File Excel hanya dibaca. Laporan
 `data/laporan-jobreg-*.xlsx` berisi RINGKASAN, PERLU DICEK (yang salah / janggal di Excel dan apa yang dilakukan
 importer), dan KURANG TRANSFER. Aturan ada di kepala `lib/import-jobreg.js`. Yang penting:
 - Kolom dicari dari nama header (kolom baru di Excel tidak menggeser hasil).
