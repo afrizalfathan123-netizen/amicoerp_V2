@@ -113,6 +113,12 @@ importer), dan KURANG TRANSFER. Aturan ada di kepala `lib/import-jobreg.js`. Yan
   masing-masing dengan Tanggal, Nopol, Nama, No Hp, Kode Tugas (boleh kosong). Customer, asal muat, lingkup, trip, harga dipilih
   sekali untuk semua (diingat untuk berikutnya). Tabel pratinjau bisa dikoreksi; server mengecek tiap baris lalu semua dibuat
   sekaligus (satu baris bermasalah = tidak ada yang dibuat).
+- **Uang kembali dari vendor** (tombol di halaman job, FINANCE): uang yang sudah dibayar ke vendor / driver dikembalikan (trip tidak
+  jadi jalan, atau hanya terpakai sebagian). Satu langkah membuat **nota kredit vendor** `NKV/YYYY/NNNN` (mengurangi pengajuan, fase
+  sama) + **uang kembali** `RFD/YYYY/NNNN` (uang masuk ke rekening yang dipilih, tampil MASUK "UANG KEMBALI" di Jurnal Kas untuk
+  dicocokkan dengan mutasi bank). Per job walau dulu dibayar dalam satu batch, boleh sebagian. Sesudahnya: batalkan job / cost
+  dikurangi / cost tetap (diajukan lagi). Beda dengan *batal bayar* (transfer salah / gagal). Membatalkan: batal bayar RFD-nya lalu
+  batalkan NKV. Pembayaran yang sudah punya uang kembali tidak bisa dibatal-bayar. Job boleh dibatalkan kalau semua dokumennya bersih 0.
 - **Satu rit = satu job**: customer + tujuan + tanggal + rit yang sama hanya boleh satu job aktif (rit berbeda boleh). Berlaku di
   Buat banyak job, Job baru, edit job, dan membuka lagi job batal. Rit yang sudah pernah dibuat ditandai "Sudah ada" di pratinjau.
 - Form Pengajuan / Invoice baru: **Tempel daftar job** (atau tempel beberapa nomor langsung di kotak cari). Job di daftar itu saja

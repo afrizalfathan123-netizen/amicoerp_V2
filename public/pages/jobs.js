@@ -503,6 +503,7 @@ export async function renderJobDetail(id) {
         <button id="topup">Top-up cost</button>
         ${j.state === "confirmed" ? `<button id="doneJob">Tandai selesai</button>` : `<button id="reopenJob">Buka lagi</button>`}
         <button class="danger" id="cancelJob">Batalkan job</button>` : ""}
+        ${canFinance() && j.state !== "cancelled" && b.paid > 0 ? `<button id="vendorRefund" title="Uang yang sudah dibayar ke vendor / driver dikembalikan (trip tidak jadi jalan, atau hanya terpakai sebagian)">Uang kembali dari vendor</button>` : ""}
       </div>
     </div>
     ${d.status ? `<div class="steps">${[
@@ -580,7 +581,7 @@ export async function renderJobDetail(id) {
     <div class="panel"><h2>Invoice & pengajuan</h2>
       ${table(`<th>Dokumen</th><th>Jenis</th><th>Fase</th><th>Tgl</th><th>Partner</th><th class="num">Nominal job ini</th><th>Status</th>`,
         d.moves.map((m) => `<tr class="click" data-href="#/moves/${m.id}">
-          <td><b>${esc(m.number || "(draft)")}</b></td><td>${m.move_type === "out_invoice" ? "Invoice customer" : "Pengajuan vendor"}${m.payment_channel === "TRANSFER_MALAM" ? "<br><span class='muted'>transfer malam</span>" : ""}</td>
+          <td><b>${esc(m.number || "(draft)")}</b></td><td>${m.move_type === "out_invoice" ? "Invoice customer" : m.credit_note_of ? "Nota kredit vendor<br><span class='muted'>uang kembali</span>" : "Pengajuan vendor"}${m.payment_channel === "TRANSFER_MALAM" ? "<br><span class='muted'>transfer malam</span>" : ""}</td>
           <td>${esc(PHASE_LABEL[m.phase])}</td><td>${tgl(m.move_date)}</td><td>${esc(m.partner || "")}</td>
           <td class="num">${m.cancelled_at ? `<s>${rp(m.amount)}</s>` : rp(m.amount)}${m.tanpa_tujuan ? `<br><span class="badge warn">tanpa tujuan</span>` : ""}</td><td>${badge(m.state)} ${badge(m.approval_state)}</td></tr>`).join(""), "Belum ada")}
     </div>
@@ -596,7 +597,9 @@ export async function renderJobDetail(id) {
   on("editJob", () => jobForm({ ...j, lines: d.lines }, { ...b, invoiced: b.invoiced, requested: b.requested }));
   on("doneJob", action(() => api("POST", `/jobs/${id}/state`, { state: "done" }), "Job selesai"));
   on("reopenJob", action(() => api("POST", `/jobs/${id}/state`, { state: "confirmed" }), "Job dibuka lagi"));
-  on("cancelJob", () => askReason("Batalkan job", "Hanya bisa kalau belum ada invoice / pengajuan aktif.", (reason) => api("POST", `/jobs/${id}/state`, { state: "cancelled", reason }), "Batalkan job"));
+  on("cancelJob", () => askReason("Batalkan job", "Hanya bisa kalau belum ada invoice / pengajuan aktif. Uang yang sudah dibayar ke vendor dicatat dulu lewat \"Uang kembali dari vendor\".",
+    (reason) => api("POST", `/jobs/${id}/state`, { state: "cancelled", reason }), "Batalkan job"));
+  on("vendorRefund", () => vendorRefundForm(j));
   on("gateOut", () => gateModal(id, "gate_out_at", "Gate out", reload));
   on("gateIn", () => gateModal(id, "gate_in_at", "Gate in", reload));
   on("pos", () => positionModal(id, reload));
@@ -674,3 +677,53 @@ function tripForm(j) {
 }
 
 export { loadMaster, canFinance };
+
+// ---------------------------------------------------------------- uang kembali dari vendor
+// Uang yang sudah dibayar ke vendor / driver dikembalikan. Server membuat nota kredit vendor (NKV) + uang kembali (RFD)
+// sekaligus, per job (walau dulu dibayar dalam satu batch), boleh sebagian, masuk ke rekening yang dipilih.
+async function vendorRefundForm(j) {
+  const rows = (await get(`/jobs/${j.id}/vendor-refund`)).filter((r) => r.bisa > 0.004);
+  if (!rows.length) return toast("Tidak ada pembayaran vendor job ini yang bisa dikembalikan", true);
+  const banks = state.cache.banks.filter((x) => x.active);
+  const AFTER = {
+    CANCEL_JOB: "Trip tidak jadi jalan: batalkan job",
+    REDUCE_COST: "Hanya terpakai sebagian: cost job dikurangi sebesar uang kembali",
+    KEEP_COST: "Cost tetap: nanti diajukan & dibayar lagi (mis. ganti driver / trip ditunda)",
+  };
+  openModal({
+    title: `Uang kembali dari vendor · ${j.job_number}`,
+    submitLabel: "Catat uang kembali",
+    body: `
+      <label>Pembayaran yang uangnya kembali<select name="move_line_id">${rows.map((r) => `<option value="${r.move_line_id}">${esc(r.number)} · ${esc(PHASE_LABEL[r.phase] || r.phase)} · ${esc(r.pihak || "-")} · dibayar ${rp(r.dibayar)}${r.dikembalikan ? `, sudah kembali ${rp(r.dikembalikan)}` : ""}</option>`).join("")}</select></label>
+      <div class="form-grid">
+        <label>Nominal kembali<input class="num" name="amount" required></label>
+        <label>Tanggal uang masuk<input type="date" name="date" value="${today()}" max="${today()}"></label>
+        <label>Masuk ke rekening<select name="bank_account_id">${options(banks, banks.find((x) => x.is_default)?.id, (x) => `${x.name}${x.kind === "OPERATIONAL" ? " (kas operasional)" : ""}`, "- pilih -")}</select></label>
+        <label class="wide">Alasan<input name="reason" required placeholder="mis. trip tidak jadi jalan, uang jalan dikembalikan driver"></label>
+      </div>
+      <h4>Sesudah uang kembali</h4>
+      <div class="radio-list">${Object.entries(AFTER).map(([k, l], i) => `<label class="radio"><input type="radio" name="after" value="${k}" ${i === 0 ? "checked" : ""}> ${esc(l)}</label>`).join("")}</div>
+      <div class="note-box" id="vrInfo"></div>
+      <div class="note-box">Dicatat sebagai <b>nota kredit vendor</b> (mengurangi pengajuan) + <b>uang kembali</b> (uang masuk ke rekening di atas, tampil
+        MASUK di Jurnal Kas untuk dicocokkan dengan mutasi bank). Pembayaran asli tetap tercatat. Beda dengan <b>batal bayar</b>, yang dipakai
+        kalau transfer salah / gagal dan uang tidak pernah sampai.</div>`,
+    onOpen: (form) => {
+      const E = form.elements;
+      const info = () => {
+        const r = rows.find((x) => String(x.move_line_id) === E.move_line_id.value);
+        if (document.activeElement !== E.amount && (!E.amount.value || E.amount.dataset.auto)) { E.amount.value = rp(r.bisa); E.amount.dataset.auto = "1"; }
+        form.querySelector("#vrInfo").innerHTML = `Dibayar ${rp(r.dibayar)} ${r.tgl_bayar ? `pada ${tgl(r.tgl_bayar)}` : ""}${r.rekening_bayar ? ` dari ${esc(r.rekening_bayar)}` : ""}.
+          Bisa dikembalikan paling banyak <b>${rp(r.bisa)}</b>. Cost baris ini ${rp(r.line_amount)}.`;
+      };
+      E.move_line_id.onchange = () => { E.amount.dataset.auto = "1"; E.amount.value = ""; info(); };
+      E.amount.oninput = () => { delete E.amount.dataset.auto; };
+      info();
+    },
+    onSubmit: async (d) => {
+      d.amount = num(d.amount);
+      const r = await api("POST", `/jobs/${j.id}/vendor-refund`, d);
+      toast(`Uang kembali dicatat: nota kredit ${r.credit_note}, ${r.payment}`);
+      window.dispatchEvent(new Event("hashchange"));
+    },
+  });
+}

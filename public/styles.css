@@ -423,6 +423,9 @@ html.busy::before { opacity: 1; transition: opacity .15s .25s; animation: progre
 .wa-foot { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: flex-start; margin-top: 8px; font-size: 12.5px; }
 .wa-foot #waInfo { flex: 1; min-width: 220px; }
 .ok-text { color: var(--olive-ink); }
+.radio-list { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 10px; }
+.radio-list .radio { display: flex; flex-direction: row; align-items: center; gap: 8px; font-size: 13px; }
+.radio-list .radio input { width: auto; }
 /* Buat banyak job: tabel pratinjau yang bisa diketik langsung */
 .batch-table td { vertical-align: top; padding: 4px 6px; font-size: 12.5px; }
 .batch-table input:not([type=checkbox]), .batch-table select { width: 100%; min-width: 90px; padding: 4px 6px; font-size: 12.5px; }

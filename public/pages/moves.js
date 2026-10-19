@@ -45,7 +45,7 @@ async function renderMoves(type) {
       head: `<th>Nomor</th><th>Tgl</th><th>${isInv ? "Customer" : "Penerima"}</th><th>Fase</th><th class="num">Job</th>
        <th class="num">Total</th><th class="num">Dibayar</th><th class="num">Sisa</th>${isInv ? "" : `<th class="num">Titipan ops</th>`}<th>Status</th>`,
       row: (m) => `<tr class="click" data-href="#/moves/${m.id}">
-        <td><b>${esc(m.number || "(draft)")}</b>${m.legacy_number && m.legacy_number !== m.number ? `<br><span class="muted">${esc(m.legacy_number)}</span>` : ""}</td>
+        <td><b>${esc(m.number || "(draft)")}</b>${m.legacy_number && m.legacy_number !== m.number ? `<br><span class="muted">${esc(m.legacy_number)}</span>` : ""}${m.credit_note_of ? `<br><span class="badge draft">nota kredit (uang kembali)</span>` : ""}</td>
         <td>${tgl(m.move_date)}</td><td>${esc(isInv ? m.partner : m.payees || "")}</td>
         <td>${esc(movePhase(m))}${m.payment_channel === "TRANSFER_MALAM" ? `<br><span class="muted">transfer malam</span>` : ""}</td>
         <td class="num">${m.total_jobs}</td><td class="num">${rp(m.amount_total)}</td><td class="num">${rp(m.amount_paid)}</td>
@@ -210,7 +210,7 @@ export async function renderMoveDetail(id) {
     <div class="page-head">
       <a href="#/${isInv ? "invoices" : "requests"}" class="btn">&larr;</a>
       <h1>${esc(m.number || "Draft")}</h1>${statusBadge(m)}
-      <span class="sub">${isInv ? "Invoice customer" : "Pengajuan vendor"} &middot; ${esc(PHASE_LABEL[m.phase])}${night ? " &middot; transfer malam" : ""}</span>
+      <span class="sub">${isInv ? "Invoice customer" : m.credit_note_of ? "Nota kredit vendor (uang kembali)" : "Pengajuan vendor"} &middot; ${esc(PHASE_LABEL[m.phase])}${night ? " &middot; transfer malam" : ""}</span>
       <div class="spacer"></div>
       <div class="actions">
         ${canFinance() && m.state === "draft" ? `<button class="primary" id="postMove">Posting</button><button class="danger" id="delMove">Hapus draft</button>` : ""}
@@ -220,11 +220,15 @@ export async function renderMoveDetail(id) {
         ${canFinance() && payable && (!night || m.titipan > 0) ? `<button class="primary" id="pay">${isInv ? "Catat pembayaran masuk" : night ? "Catat penyaluran ke vendor" : "Catat transfer"}</button>` : ""}
         ${canFinance() && m.state === "posted" ? `<button class="danger" id="cancelMove">Batalkan</button>` : ""}
         ${m.state !== "draft" ? `<a class="btn" href="#/moves/${m.id}/cetak">Cetak</a>` : ""}
-        ${!isInv ? `<button id="waText" title="Format pengajuan untuk grup WhatsApp">Salin teks WhatsApp</button>` : ""}
+        ${!isInv && !m.credit_note_of ? `<button id="waText" title="Format pengajuan untuk grup WhatsApp">Salin teks WhatsApp</button>` : ""}
       </div>
     </div>
     ${m.state === "posted" && m.approval_state === "PENDING" ? `<div class="note-box warn-box">Menunggu persetujuan ADMIN sebelum bisa dibayar.</div>` : ""}
     ${m.approval_state === "REJECTED" ? `<div class="note-box warn-box">Ditolak: ${esc(m.rejection_reason || "")}</div>` : ""}
+    ${m.credit_note_of ? `<div class="note-box">Nota kredit untuk pengajuan <a href="#/moves/${m.credit_note_of}">${esc(m.credit_note_of_number || "")}</a>: uang yang sudah dibayar ke vendor
+      dikembalikan. Membatalkan: <b>Batal bayar</b> uang kembalinya dulu, lalu <b>Batalkan</b> nota kredit ini.</div>` : ""}
+    ${m.credit_notes?.length ? `<div class="note-box">Uang kembali dari vendor untuk pengajuan ini: ${m.credit_notes.map((c) => `<a href="#/moves/${c.id}">${esc(c.number)}</a>
+      ${rp(Math.abs(c.amount_total))}${c.state === "cancelled" ? " (batal)" : ""}`).join(", ")}.</div>` : ""}
     <div class="panel"><div class="kv">
       ${isInv ? kv("Customer", m.partner) + kv("Tagih ke", [m.bill_to_name, m.bill_to_npwp && `NPWP ${m.bill_to_npwp}`].filter(Boolean).join(" / "))
               : kv("Penerima", [...new Set(m.lines.filter((l) => !l.cancelled_at).map((l) => l.payee_name || l.payee_holder))].join(", "))}

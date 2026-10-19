@@ -147,6 +147,7 @@ export function formData(form) {
   const out = {};
   for (const el of form.querySelectorAll("[name]")) {
     if (el.type === "checkbox") out[el.name] = el.checked;
+    else if (el.type === "radio") { if (el.checked) out[el.name] = el.value; }   // radio: hanya pilihan yang dicentang
     else out[el.name] = el.value;
   }
   return out;

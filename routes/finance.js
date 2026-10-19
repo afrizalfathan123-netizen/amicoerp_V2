@@ -12,11 +12,39 @@
 //   - Selisih tanpa tujuan (baris dokumen tanpa baris order, mis. dari impor): diarahkan ke baris order job,
 //     dijadikan saldo partner (kalau sudah dibayar), atau dibatalkan (kalau belum dibayar).
 //   - Transfer malam: dibayar ke vendor dari kas OPERATIONAL, maksimal sebesar dana yang sudah dikirim ke sana.
+//   - Uang kembali dari vendor (uang sudah sampai lalu dikembalikan): nota kredit vendor NKV (baris minus, fase sama) +
+//     uang kembali RFD (pembayaran minus ke rekening yang dipilih), per job, boleh sebagian. Beda dengan batal bayar
+//     (salah / gagal transfer). Pembayaran yang sudah punya uang kembali tidak bisa dibatal-bayar.
 import express from "express";
 import { requireRole, assertRole, ROLES } from "../lib/auth.js";
 import { route, fail, money, rupiah, today, insertRow, nextNumber, audit, setting } from "../lib/util.js";
 import { compareJobReg, saveJobRegSnapshot } from "../lib/import-jobreg.js";
-import { parseNumbers } from "./jobs.js";
+import { parseNumbers, jobOpenDocs } from "./jobs.js";
+
+const DAY = /^\d{4}-\d{2}-\d{2}$/;
+
+// Baris pengajuan vendor job ini yang sudah dibayar: dibayar, sudah dikembalikan (nota kredit), dan yang masih bisa dikembalikan.
+async function refundableLines(q, jobId, lineId = null) {
+  const rows = await q.query(
+    `select ml.id as move_line_id, ml.job_line_id, m.id as move_id, m.number, m.phase, m.payment_channel, m.partner_id,
+            coalesce(pt.name, ml.payee_holder, vp.name) as pihak, ml.payee_partner_id, ml.payee_bank_name, ml.payee_account_number, ml.payee_holder,
+            pr.kind, ml.amount, jl.amount as line_amount,
+            coalesce((select sum(pl.amount) from account_payment_line pl where pl.move_line_id = ml.id), 0) as dibayar,
+            coalesce((select -sum(c.amount) from account_move_line c join account_move cm on cm.id = c.move_id
+                      where c.credit_of_line_id = ml.id and cm.state = 'posted' and c.cancelled_at is null), 0) as dikembalikan,
+            (select string_agg(distinct ba.name, ', ') from account_payment_line pl join account_payment p on p.id = pl.payment_id
+               left join res_bank_account ba on ba.id = p.bank_account_id where pl.move_line_id = ml.id and pl.amount > 0) as rekening_bayar,
+            (select max(p.pay_date) from account_payment_line pl join account_payment p on p.id = pl.payment_id
+              where pl.move_line_id = ml.id and pl.amount > 0) as tgl_bayar
+     from account_move_line ml join account_move m on m.id = ml.move_id
+     join job_line jl on jl.id = ml.job_line_id join product pr on pr.id = jl.product_id
+     left join res_partner pt on pt.id = ml.payee_partner_id left join res_partner vp on vp.id = jl.partner_id
+     where ml.job_id = $1 and m.move_type = 'in_invoice' and m.credit_note_of is null and m.state = 'posted'
+       and ml.cancelled_at is null and ($2::int is null or ml.id = $2)
+     order by m.move_date, ml.id`, [jobId, lineId]);
+  for (const r of rows) r.bisa = money(r.dibayar - r.dikembalikan);
+  return rows;
+}
 
 const PHASES = ["DP", "SETTLEMENT", "FULL", "OTHER"];
 const KINDS = ["TRUCKING", "CALO", "TOL", "PARKIR", "BONGKAR", "LAINNYA"];
@@ -226,6 +254,11 @@ export async function loadMove(q, id) {
      left join v_titipan_operasional tt on tt.move_id = m.id
      where m.id = $1`, [id]);
   if (!move) fail("Dokumen tidak ditemukan", 404);
+  // nota kredit: dokumen asalnya; pengajuan: nota kredit yang mengurangi dokumen ini
+  if (move.credit_note_of) move.credit_note_of_number = (await q.query("select number from account_move where id = $1", [move.credit_note_of]))[0]?.number;
+  move.credit_notes = await q.query(
+    `select m.id, m.number, m.move_date, m.state, s.amount_total from account_move m join v_move_status s on s.move_id = m.id
+     where m.credit_note_of = $1 order by m.id`, [id]);
   move.lines = await q.query(
     `select ml.*, j.job_number, j.plate_number, j.do_number, j.job_date, j.gate_out_at, j.truck_type, p.kind, payee.name as payee_name,
             j.driver1_name, j.driver1_phone, j.driver2_name, j.driver2_phone, j.vendor_scheme, j.customer_scheme, cu.name as customer,
@@ -570,6 +603,11 @@ export default function financeRoutes(db) {
     const [p] = await t.query("select * from account_payment where id = $1 for update", [id]);
     if (!p) fail("Pembayaran tidak ditemukan", 404);
     if (p.state === "reversed" || p.reversed_payment_id) fail("Pembayaran ini sudah dibalik / adalah pembalik");
+    const [cn] = await t.query(
+      `select string_agg(distinct cm.number, ', ') as nomor from account_payment_line pl
+       join account_move_line c on c.credit_of_line_id = pl.move_line_id join account_move cm on cm.id = c.move_id
+       where pl.payment_id = $1 and cm.state = 'posted' and c.cancelled_at is null`, [id]);
+    if (cn?.nomor) fail(`Pembayaran ini sudah punya uang kembali (${cn.nomor}). Batalkan uang kembalinya dulu.`);
     if (!String(req.body?.reason || "").trim()) fail("Alasan wajib diisi");
     const date = req.body.pay_date || today();
     const revId = await insertRow(t, "account_payment", {
@@ -584,6 +622,70 @@ export default function financeRoutes(db) {
     await t.query("update account_payment set state = 'reversed' where id = $1", [p.id]);
     await audit(t, req, "account_payment", p.id, "reverse", { reason: req.body.reason });
     return loadMove(t, p.move_id);
+  })));
+
+  // ---------------------------------------------------------------- uang kembali dari vendor
+  r.get("/jobs/:id/vendor-refund", requireRole(ROLES.READ), route((req) => refundableLines(db, Number(req.params.id))));
+
+  // Satu langkah: nota kredit vendor (NKV) + uang kembali (RFD) untuk satu baris pengajuan job ini, lalu salah satu:
+  //   CANCEL_JOB  = trip tidak jadi jalan, job dibatalkan (harus bersih: semua dokumen job ini nol)
+  //   REDUCE_COST = cost job dikurangi sebesar uang kembali (vendor / driver tidak memakai semuanya)
+  //   KEEP_COST   = cost tetap, nanti diajukan & dibayar lagi (mis. ganti driver / trip ditunda)
+  r.post("/jobs/:id/vendor-refund", requireRole(ROLES.FINANCE), route((req) => db.tx(async (t) => {
+    const jobId = Number(req.params.id);
+    const b = req.body || {};
+    const [job] = await t.query("select * from job where id = $1 for update", [jobId]);
+    if (!job) fail("Job tidak ditemukan", 404);
+    if (job.state === "cancelled") fail("Job sudah dibatalkan");
+    await t.query("select id from account_move_line where id = $1 for update", [Number(b.move_line_id) || 0]);
+    const [line] = await refundableLines(t, jobId, Number(b.move_line_id) || -1);
+    if (!line) fail("Pilih pembayaran vendor job ini yang uangnya kembali");
+    const amount = money(b.amount);
+    if (!(amount > 0)) fail("Nominal uang kembali harus lebih dari 0");
+    if (amount > line.bisa + 0.004) fail(`Melebihi yang sudah dibayar dan belum dikembalikan (${rupiah(line.bisa)})`);
+    const reason = String(b.reason || "").trim();
+    if (!reason) fail("Alasan wajib diisi (mis. trip tidak jadi jalan, uang jalan dikembalikan driver)");
+    const [bank] = await t.query("select * from res_bank_account where id = $1 and active", [Number(b.bank_account_id) || 0]);
+    if (!bank) fail("Pilih rekening tempat uang kembali masuk");
+    const date = DAY.test(String(b.date || "")) ? b.date : today();
+    if (date > today()) fail("Tanggal uang kembali tidak boleh di masa depan");
+    const after = ["CANCEL_JOB", "REDUCE_COST", "KEEP_COST"].includes(b.after) ? b.after : "KEEP_COST";
+    const year = date.slice(0, 4);
+
+    const cnNumber = await nextNumber(t, `NKV/${year}`, `NKV/${year}/`);
+    const cnId = await insertRow(t, "account_move", {
+      number: cnNumber, move_type: "in_invoice", phase: line.phase, partner_id: line.partner_id, move_date: date, state: "posted",
+      payment_channel: "NORMAL", credit_note_of: line.move_id, note: `Uang kembali dari vendor (${line.number}): ${reason}`,
+      created_by: req.user.id, posted_at: new Date().toISOString(),
+    });
+    const cnLine = await insertRow(t, "account_move_line", {
+      move_id: cnId, line_no: 1, job_line_id: line.job_line_id, job_id: jobId, amount: -amount,
+      description: `Nota kredit ${line.number}: ${reason}`, payee_partner_id: line.payee_partner_id, payee_bank_name: line.payee_bank_name,
+      payee_account_number: line.payee_account_number, payee_holder: line.payee_holder, credit_of_line_id: line.move_line_id,
+    });
+    const payNumber = await nextNumber(t, `RFD/${year}`, `RFD/${year}/`);
+    const payId = await insertRow(t, "account_payment", {
+      number: payNumber, payment_type: "outbound", move_id: cnId, pay_date: date, amount: -amount, bank_account_id: bank.id,
+      note: reason, created_by: req.user.id,
+    });
+    await insertRow(t, "account_payment_line", { payment_id: payId, move_line_id: cnLine, job_id: jobId, amount: -amount, actual_payee_name: line.pihak });
+
+    if (after === "REDUCE_COST") {
+      await t.query("update job_line set amount = greatest(amount - $1, 0) where id = $2", [amount, line.job_line_id]);
+      await t.query("update job set updated_at = now() where id = $1", [jobId]);
+    }
+    if (after === "CANCEL_JOB") {
+      if (await jobOpenDocs(t, jobId)) {
+        fail("Job belum bisa dibatalkan: masih ada invoice / pengajuan / pembayaran lain di job ini. Kembalikan semua dulu, atau pilih \"cost tetap\".");
+      }
+      await t.query("update job set state = 'cancelled', updated_at = now() where id = $1", [jobId]);
+      await audit(t, req, "job", jobId, "state_cancelled", { reason: `${reason} (uang kembali ${payNumber})` });
+    }
+    await audit(t, req, "job", jobId, "vendor_refund", {
+      nota_kredit: cnNumber, uang_kembali: payNumber, dari: line.number, pihak: line.pihak, nominal: amount, rekening: bank.name, tanggal: date,
+      sesudahnya: { CANCEL_JOB: "job dibatalkan", REDUCE_COST: "cost dikurangi", KEEP_COST: "cost tetap" }[after], alasan: reason,
+    });
+    return { credit_note_id: cnId, credit_note: cnNumber, payment: payNumber };
   })));
 
   // ---------------------------------------------------------------- transfer malam (kas operasional)

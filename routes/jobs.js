@@ -217,6 +217,22 @@ async function listJobs(db, q) {
      order by j.job_date desc, j.id desc limit ${limit} offset ${offset}`, params);
 }
 
+// Job boleh dibatalkan kalau tidak ada dokumen yang masih "hidup": tidak ada draft, dan per baris order yang sudah
+// diajukan / ditagih / dibayar bersihnya 0 (mis. pengajuan 150.000 dibayar, lalu nota kredit + uang kembali 150.000).
+export async function jobOpenDocs(t, jobId) {
+  const [x] = await t.query(
+    `select (select count(*) from account_move_line ml join account_move m on m.id = ml.move_id
+              where ml.job_id = $1 and m.state = 'draft' and ml.cancelled_at is null)::int as draft,
+            (select count(*) from (
+               select sum(ml.amount) as billed,
+                      sum(coalesce((select sum(pl.amount) from account_payment_line pl where pl.move_line_id = ml.id), 0)) as paid
+               from account_move_line ml join account_move m on m.id = ml.move_id
+               where ml.job_id = $1 and m.state = 'posted' and ml.cancelled_at is null
+               group by coalesce(ml.job_line_id, -ml.id)) s
+             where abs(s.billed) > 0.004 or abs(s.paid) > 0.004)::int as open`, [jobId]);
+  return x.draft + x.open;
+}
+
 // Buat satu job (form Job baru dan Buat banyak job memakai jalur yang sama, jadi aturannya sama persis)
 async function createJob(t, req, b, extra = {}) {
   for (const f of ["job_date", "customer_id", "pol_id", "pod_id", "truck_type"]) if (!b[f]) fail(`${f} wajib diisi`);
@@ -287,7 +303,7 @@ export default function jobRoutes(db) {
     if (!job) fail("Job tidak ditemukan", 404);
     const [balance] = await db.query("select * from v_job_balance where job_id = $1", [id]);
     const moves = await db.query(
-      `select m.id, m.number, m.move_type, m.phase, m.state, m.approval_state, m.payment_channel, m.move_date,
+      `select m.id, m.number, m.move_type, m.phase, m.state, m.approval_state, m.payment_channel, m.move_date, m.credit_note_of,
               coalesce(pt.name, ml.payee_holder) as partner, ml.amount, ml.cancelled_at, ml.job_line_id is null as tanpa_tujuan
        from account_move_line ml join account_move m on m.id = ml.move_id
        left join res_partner pt on pt.id = coalesce(m.partner_id, ml.payee_partner_id)
@@ -437,11 +453,8 @@ export default function jobRoutes(db) {
       if (cur?.state === "cancelled") { await assertUniqueDo(t, cur.do_number, id); await assertUniqueRit(t, cur, id); }
     }
     if (!["confirmed", "done", "cancelled"].includes(state)) fail("State tidak dikenal");
-    if (state === "cancelled") {
-      const [m] = await t.query(
-        `select count(*)::int n from account_move_line ml join account_move m on m.id = ml.move_id
-         where ml.job_id = $1 and m.state <> 'cancelled' and ml.cancelled_at is null`, [id]);
-      if (m.n > 0) fail("Batalkan dulu invoice/pengajuan job ini");
+    if (state === "cancelled" && await jobOpenDocs(t, id)) {
+      fail("Batalkan dulu invoice/pengajuan job ini (uang yang sudah dibayar ke vendor: catat lewat Uang kembali dari vendor)");
     }
     await t.query("update job set state = $1, updated_at = now() where id = $2", [state, id]);
     await audit(t, req, "job", id, `state_${state}`, { reason });

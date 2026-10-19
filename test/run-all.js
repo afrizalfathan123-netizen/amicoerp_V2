@@ -840,6 +840,74 @@ try {
     assert.match(await ops.call("POST", `/jobs/${a.id}/state`, { state: "confirmed" }, 400), /sudah dibuat/);
   });
 
+  await step("uang kembali dari vendor: nota kredit + uang masuk per job (walau dibayar satu batch), batal job / cost dikurangi / cost tetap", async () => {
+    const mk = (rit) => ops.call("POST", "/jobs", { job_date: "2026-10-12", customer_id: id.KOTA, vendor_id: id.SINAR, vendor_bank_id: id.SINAR_BANK,
+      pol_id: id.CKR, pod_id: id.CKG, truck_type: "CDDL", delivery_scope: "INNERCITY", rit_number: rit, plate_number: "B 5 RF" });
+    const [A, B, C] = [await mk(11), await mk(12), await mk(13)];
+    // satu pengajuan (batch) A + B, satu transfer; C sendiri
+    let req = await createMove({ move_type: "in_invoice", phase: "FULL", move_date: "2026-10-12", lines: [{ job_id: A.id, amount: 1700000 }, { job_id: B.id, amount: 1700000 }] });
+    await admin.call("POST", `/moves/${req.id}/approve`, {});
+    req = await fin.call("POST", `/moves/${req.id}/pay`, { bank_account_id: id.BCA, pay_date: "2026-10-12" });
+    let reqC = await createMove({ move_type: "in_invoice", phase: "FULL", move_date: "2026-10-12", lines: [{ job_id: C.id, amount: 1700000 }] });
+    await admin.call("POST", `/moves/${reqC.id}/approve`, {});
+    reqC = await fin.call("POST", `/moves/${reqC.id}/pay`, { bank_account_id: id.BCA, pay_date: "2026-10-12" });
+    const kasop = async () => (await viewer.call("GET", "/bank-balance")).find((x) => x.bank_account_id === id.KASOP).mutasi_bersih;
+    const kasBefore = await kasop();
+
+    const [rowA] = await fin.call("GET", `/jobs/${A.id}/vendor-refund`);
+    assert.deepEqual([rowA.number, rowA.dibayar, rowA.dikembalikan, rowA.bisa], [req.number, 1700000, 0, 1700000]);
+    const body = (extra) => ({ move_line_id: rowA.move_line_id, amount: 1700000, bank_account_id: id.KASOP, date: "2026-10-13", reason: "trip tidak jadi jalan", ...extra });
+    assert.match(await viewer.call("POST", `/jobs/${A.id}/vendor-refund`, body(), 403), /akses/);
+    assert.match(await fin.call("POST", `/jobs/${A.id}/vendor-refund`, body({ amount: 1700001 }), 400), /Melebihi/);
+    assert.match(await fin.call("POST", `/jobs/${A.id}/vendor-refund`, body({ reason: "" }), 400), /Alasan/);
+    // job belum bisa dibatalkan selama uangnya belum kembali
+    assert.match(await ops.call("POST", `/jobs/${A.id}/state`, { state: "cancelled", reason: "x" }, 400), /Uang kembali dari vendor/);
+
+    // A: uang kembali penuh ke kas operasional, trip tidak jadi jalan -> job batal
+    const ra = await fin.call("POST", `/jobs/${A.id}/vendor-refund`, body({ after: "CANCEL_JOB" }));
+    assert.match(ra.credit_note, /^NKV\/2026\/\d{4}$/);
+    assert.match(ra.payment, /^RFD\/2026\/\d{4}$/);
+    let dA = await fin.call("GET", `/jobs/${A.id}`);
+    assert.deepEqual([dA.job.state, dA.balance.requested, dA.balance.paid], ["cancelled", 0, 0]);
+    assert.ok(dA.moves.some((m) => m.credit_note_of === req.id && m.amount === -1700000));
+    // jurnal kas: keluar 1.700.000 (transfer batch) lalu MASUK 1.700.000 uang kembali ke kas operasional -> saldo job 0
+    assert.deepEqual(dA.ledger.map((x) => [x.arah, x.jenis, x.nominal, x.rekening]),
+      [["KELUAR", "FULL", 1700000, "BCA AMICO"], ["MASUK", "UANG KEMBALI", 1700000, "Kas Operasional"]]);
+    assert.equal(await kasop(), kasBefore + 1700000);
+    // pengajuan asal tetap lunas, nota kreditnya tercatat; B di batch yang sama tidak berubah
+    const reqNow = await fin.call("GET", `/moves/${req.id}`);
+    assert.deepEqual([reqNow.amount_total, reqNow.amount_paid, reqNow.amount_residual, reqNow.credit_notes.map((c) => c.number)], [3400000, 3400000, 0, [ra.credit_note]]);
+    const cn = await fin.call("GET", `/moves/${ra.credit_note_id}`);
+    assert.deepEqual([cn.credit_note_of_number, cn.amount_total, cn.amount_paid, cn.amount_residual, cn.approval_state], [req.number, -1700000, -1700000, 0, "NOT_REQUIRED"]);
+    assert.deepEqual((await fin.call("GET", `/jobs/${B.id}`)).balance.paid, 1700000);
+    // transfer batch yang sudah punya uang kembali tidak bisa dibatal-bayar (uangnya nanti terhitung dua kali)
+    assert.match(await fin.call("POST", `/payments/${req.payments[0].id}/reverse`, { reason: "x" }, 400), /sudah punya uang kembali/);
+
+    // B: hanya terpakai sebagian (driver pakai 1.200.000, kembali 500.000 ke BCA) -> cost turun, tetap lunas, tidak kurang transfer
+    const [rowB] = await fin.call("GET", `/jobs/${B.id}/vendor-refund`);
+    await fin.call("POST", `/jobs/${B.id}/vendor-refund`, { move_line_id: rowB.move_line_id, amount: 500000, bank_account_id: id.BCA, reason: "solar sisa", after: "REDUCE_COST" });
+    const dB = await fin.call("GET", `/jobs/${B.id}`);
+    assert.deepEqual([dB.job.state, dB.balance.cost, dB.balance.requested, dB.balance.paid, dB.kurang_transfer.length], ["confirmed", 1200000, 1200000, 1200000, 0]);
+    assert.equal((await fin.call("GET", `/jobs/${B.id}/vendor-refund`))[0].bisa, 1200000);
+
+    // C: cost tetap (ganti driver) -> job jalan, bisa diajukan lagi 1.700.000
+    const [rowC] = await fin.call("GET", `/jobs/${C.id}/vendor-refund`);
+    const rc = await fin.call("POST", `/jobs/${C.id}/vendor-refund`, { move_line_id: rowC.move_line_id, amount: 1700000, bank_account_id: id.BCA, reason: "ganti driver", after: "KEEP_COST" });
+    let dC = await fin.call("GET", `/jobs/${C.id}`);
+    assert.deepEqual([dC.job.state, dC.balance.cost, dC.balance.requested, dC.balance.paid], ["confirmed", 1700000, 0, 0]);
+    const el = (await fin.call("GET", "/moves/eligible?move_type=in_invoice&phase=FULL")).find((x) => x.job_id === C.id);
+    assert.equal(el.suggested, 1700000);
+    // dibatalkan: batal bayar uang kembalinya, lalu batalkan nota kredit -> kembali seperti sebelum
+    const cnC = await fin.call("GET", `/moves/${rc.credit_note_id}`);
+    assert.match(await fin.call("POST", `/moves/${cnC.id}/cancel`, { reason: "salah catat" }, 400), /Balik dulu/);
+    await fin.call("POST", `/payments/${cnC.payments[0].id}/reverse`, { reason: "salah catat" });
+    await fin.call("POST", `/moves/${cnC.id}/cancel`, { reason: "salah catat" });
+    dC = await fin.call("GET", `/jobs/${C.id}`);
+    assert.deepEqual([dC.balance.requested, dC.balance.paid], [1700000, 1700000]);
+    assert.equal(dC.ledger.reduce((a, x) => a + (x.arah === "MASUK" ? x.nominal : -x.nominal), 0), -1700000);
+    assert.equal((await fin.call("GET", `/jobs/${C.id}/vendor-refund`))[0].bisa, 1700000);
+  });
+
   await step("ringan: jawaban dikompresi, file tampilan tanpa cek sesi, ringkasan status cocok dengan daftar job", async () => {
     const root = base.replace(/\/api$/, "");
     const login = await fetch(`${base}/login`, { method: "POST", headers: { "Content-Type": "application/json" },

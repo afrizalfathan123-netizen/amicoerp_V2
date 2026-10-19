@@ -262,7 +262,7 @@ npm test
 ```
 | File | Isi |
 |---|---|
-| `test/run-all.js` | alur lengkap lewat HTTP per role di PGlite memori (35 langkah, termasuk cetak invoice format AMICO, kode tugas unik, buat banyak job dari absen + satu rit satu job, unit sewa + per periode kontrak + perpanjang + peringatan & tagihan per periode, gate dari daftar job, tanggal job salah ketik, dua orang mengedit job yang sama, cek harga jual, tempel daftar di form pengajuan, dan kompresi jawaban): job, invoice, pengajuan, bayar, transfer malam, 50/50, selisih tanpa tujuan, SJ, reroute, AR/AP, tempel daftar, export |
+| `test/run-all.js` | alur lengkap lewat HTTP per role di PGlite memori (36 langkah, termasuk cetak invoice format AMICO, kode tugas unik, buat banyak job dari absen + satu rit satu job, uang kembali dari vendor, unit sewa + per periode kontrak + perpanjang + peringatan & tagihan per periode, gate dari daftar job, tanggal job salah ketik, dua orang mengedit job yang sama, cek harga jual, tempel daftar di form pengajuan, dan kompresi jawaban): job, invoice, pengajuan, bayar, transfer malam, 50/50, selisih tanpa tujuan, SJ, reroute, AR/AP, tempel daftar, export |
 | `test/import.test.js` | impor dari tiruan database v1 (12) |
 | `test/jobreg.test.js` | impor JOB REGISTRATION dari workbook tiruan, termasuk reset yang menjaga sewa / rekening / ATTN dan kode tugas dobel dari Job List v1 (17) |
 | `test/joblist-v1.test.js` | impor Job List v1 (5) |
