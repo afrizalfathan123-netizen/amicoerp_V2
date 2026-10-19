@@ -39,7 +39,8 @@ export async function renderUnits() {
         ${P.mode === "month" ? `<label>Bulan<input type="month" id="uMonth" value="${esc(P.month)}"></label>` : ""}
         ${P.mode === "range" ? `<label>Dari<input type="date" id="uFrom" value="${esc(P.from)}"></label>
           <label>Sampai<input type="date" id="uTo" value="${esc(P.to)}"></label>` : ""}
-      </div></div>
+      </div>
+      <button id="uExportAll" title="Satu file Excel: ringkasan unit, trip, harian, per periode kontrak, kontrak, tagihan & pembayaran sewa">Export Excel</button></div>
     <div id="uAlerts"></div>
     <div class="tabs">${Object.entries(TABS).map(([k, l]) => `<a href="#" data-tab="${k}" class="${k === tab ? "active" : ""}">${esc(l)}</a>`).join("")}</div>
     <div id="uBox">${skelTable(6, 7)}</div>`;
@@ -53,6 +54,12 @@ export async function renderUnits() {
   };
   document.getElementById("uFrom")?.addEventListener("change", range);
   document.getElementById("uTo")?.addEventListener("change", range);
+  // export lengkap semua tab; tagihan & ringkasan mengikuti periode yang dipilih (kontrak & per periode: semua)
+  document.getElementById("uExportAll").onclick = async (e) => {
+    e.target.disabled = true;
+    await downloadExcel({ ...P.body, lengkap: 1 });
+    e.target.disabled = false;
+  };
   const box = document.getElementById("uBox");
   if (tab === "contracts") return renderContracts(box);
   if (tab === "periods") return renderPeriods(box);

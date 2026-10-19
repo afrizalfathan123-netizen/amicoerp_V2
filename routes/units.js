@@ -83,6 +83,28 @@ const XL_TRIPS = [
   ["UANG JALAN", "cost"], ["KONTRIBUSI", "kontribusi"], ["SEWA TERALOKASI", "rent_cost"], ["UNTUNG TRIP", "untung"],
 ];
 const XL_DAYS = [["PLAT", "plate_number", 14], ["TANGGAL", "day", 12], ["BIAYA SEWA HARI INI", "day_cost"], ["STATUS", "status", 14], ["JOB", "jobs", 40]];
+// export lengkap (tombol Export Excel di kepala halaman Unit Sewa)
+const XL_PERIODS = [
+  ["PLAT", "plate_number", 14], ["TRUK", "truck_type", 10], ["PEMILIK", "pemilik", 22], ["PERIODE KE", "ke"], ["DARI", "from", 12], ["SAMPAI", "to", 12],
+  ["HARI", "hari"], ["STATUS", "status_text", 12], ["SEWA PERIODE", "sewa_periode"], ["SEWA S/D HARI INI", "sewa_sd_hari_ini"], ["TRIP", "trips"],
+  ["SELLING", "selling"], ["UANG JALAN", "uang_jalan"], ["KONTRIBUSI", "kontribusi"], ["UNTUNG / RUGI", "untung"],
+  ["VS PERIODE SEBELUMNYA", "selisih_sebelumnya"], ["UTILISASI %", "utilisasi"], ["BIAYA MENGANGGUR", "biaya_menganggur"],
+];
+const XL_CONTRACTS = [
+  ["PLAT", "plate_number", 14], ["TRUK", "truck_type", 10], ["PEMILIK", "partner", 24], ["MULAI", "date_start", 12], ["SELESAI", "date_end", 12],
+  ["SEWA / BULAN", "monthly_rent"], ["BIAYA TETAP LAIN / BULAN", "other_monthly_cost"], ["STATUS", "status_text", 12], ["CATATAN", "note", 30],
+];
+const XL_BILLS = [
+  ["NOMOR", "number", 16], ["PLAT", "plate_number", 14], ["PEMILIK", "partner", 24], ["DARI", "dari", 12], ["SAMPAI", "sampai", 12], ["HARI", "days"],
+  ["TAGIHAN", "amount"], ["DIBAYAR", "paid"], ["SISA", "residual"], ["JATUH TEMPO", "due_date", 12], ["STATUS", "status_text", 12],
+  ["ALASAN BATAL", "cancel_reason", 24], ["CATATAN", "note", 24],
+];
+const XL_RENT_PAYMENTS = [
+  ["NOMOR TAGIHAN", "number", 16], ["PLAT", "plate_number", 14], ["PEMILIK", "partner", 24], ["TANGGAL BAYAR", "pay_date", 12], ["NOMINAL", "amount"],
+  ["DARI REKENING", "bank", 24], ["JENIS", "jenis", 14], ["CATATAN", "note", 30],
+];
+const PERIOD_STATUS = { SELESAI: "Selesai", BERJALAN: "Berjalan", BELUM_MULAI: "Belum mulai" };
+const day10 = (v) => (v == null ? null : String(v instanceof Date ? v.toISOString() : v).slice(0, 10));
 
 function addSheet(wb, name, cols, rows, totalKeys = []) {
   const ws = wb.addWorksheet(name);
@@ -346,9 +368,44 @@ export default function unitRoutes(db) {
         addSheet(wb, "PER BULAN", [["BULAN", "bulan", 10], ...XL_SUMMARY], pb,
           ["hari_jalan", "hari_menganggur", "trips", "selling", "uang_jalan", "kontribusi", "sewa_sd_hari_ini", "untung", "biaya_menganggur"]);
       }
+      // lengkap: + per periode kontrak, kontrak, tagihan & pembayaran sewa (tagihan yang periodenya mulai di rentang ini)
+      if (b.lengkap) {
+        const periods = (await contractPeriods(db)).periods.map((x) => ({ ...x, from: day10(x.from), to: day10(x.to), status_text: PERIOD_STATUS[x.status] || x.status }));
+        addSheet(wb, "PER PERIODE KONTRAK", XL_PERIODS, periods, ["sewa_periode", "trips", "selling", "uang_jalan", "kontribusi", "untung", "biaya_menganggur"]);
+        const contracts = (await db.query(
+          `select c.*, v.plate_number, v.truck_type, p.name as partner,
+                  case when c.date_start > $1::date then 'Belum mulai' when c.date_end is null or c.date_end >= $1::date then 'Berjalan' else 'Selesai' end as status_text
+           from vehicle_contract c join vehicle v on v.id = c.vehicle_id left join res_partner p on p.id = c.partner_id
+           order by v.plate_number, c.date_start`, [today()])).map((c) => ({ ...c, date_start: day10(c.date_start), date_end: day10(c.date_end) }));
+        addSheet(wb, "KONTRAK SEWA", XL_CONTRACTS, contracts);
+        const billFrom = `${rg.from.slice(0, 7)}-01`;
+        const bills = (await db.query(
+          `select b.*, v.plate_number, p.name as partner, greatest(b.period, c.date_start) as dari, greatest(b.period, c.date_start) + b.days - 1 as sampai
+           from v_vehicle_rent_bill b join vehicle_contract c on c.id = b.contract_id join vehicle v on v.id = c.vehicle_id
+           left join res_partner p on p.id = c.partner_id
+           where ($1::text = 'all' or b.period between $2::date and $3::date) order by b.period, v.plate_number, b.number`,
+          [rg.kind === "all" ? "all" : "", billFrom, rg.to])).map((x) => ({ ...x, dari: day10(x.dari), sampai: day10(x.sampai), due_date: day10(x.due_date),
+          status_text: x.state === "cancelled" ? "Batal" : x.residual <= 0.004 ? "Lunas" : "Belum lunas" }));
+        const live = bills.filter((x) => x.state !== "cancelled");
+        addSheet(wb, "TAGIHAN SEWA", XL_BILLS, bills, []);
+        if (live.length) {
+          const ws = wb.getWorksheet("TAGIHAN SEWA");
+          const tr = ws.addRow({ number: "TOTAL (tanpa yang batal)", amount: live.reduce((a, x) => a + Number(x.amount), 0),
+            paid: live.reduce((a, x) => a + Number(x.paid), 0), residual: live.reduce((a, x) => a + Number(x.residual), 0) });
+          tr.font = { bold: true };
+        }
+        const pays = bills.length ? (await db.query(
+          `select b.number, v.plate_number, p.name as partner, x.pay_date, x.amount, ba.name as bank, x.note,
+                  case when x.reversed_payment_id is not null then 'Pembalik (batal bayar)'
+                       when exists (select 1 from vehicle_rent_payment y where y.reversed_payment_id = x.id) then 'Dibatalkan' else 'Bayar' end as jenis
+           from vehicle_rent_payment x join vehicle_rent_bill b on b.id = x.bill_id join vehicle_contract c on c.id = b.contract_id
+           join vehicle v on v.id = c.vehicle_id left join res_partner p on p.id = c.partner_id left join res_bank_account ba on ba.id = x.bank_account_id
+           where b.id = any($1::int[]) order by x.pay_date, x.id`, [bills.map((x) => x.id)])).map((x) => ({ ...x, pay_date: day10(x.pay_date) })) : [];
+        addSheet(wb, "PEMBAYARAN SEWA", XL_RENT_PAYMENTS, pays, ["amount"]);
+      }
       const plate = b.vehicle_id && units[0] ? `-${units[0].plate_number.replace(/\s/g, "")}` : "";
       const tag = rg.kind === "all" ? "keseluruhan" : rg.kind === "range" ? `${rg.from}_sd_${rg.to}` : rg.month;
-      const name = `unit-sewa-${tag}${plate}.xlsx`;
+      const name = `unit-sewa-${b.lengkap ? "lengkap-" : ""}${tag}${plate}.xlsx`;
       res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
       res.setHeader("Content-Disposition", `attachment; filename="${name}"`);
       await wb.xlsx.write(res);

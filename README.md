@@ -154,6 +154,8 @@ lain); trip diambil otomatis dari job dengan plat yang sama (spasi / huruf besar
   per bulan kalender) tidak dibuat lagi supaya tidak dobel, dan dilaporkan.
 - Tabel per unit dan tabel trip (per unit atau "Semua trip bulan ini") bisa difilter / diurut per kolom seperti Excel; ringkasan
   dan total mengikuti yang tampil. Export Excel (sheet RINGKASAN UNIT, TRIP, HARIAN) juga persis yang tampil.
+  Tombol **Export Excel** di kepala halaman Unit Sewa: satu file lengkap untuk periode yang dipilih (ringkasan unit, trip, harian,
+  per bulan, per periode kontrak, kontrak sewa, tagihan sewa, pembayaran sewa).
 - Kontrak bisa diubah (termasuk plat & jenis truk unit) dan dihapus selama belum punya tagihan sewa.
 - Tagihan sewa bulanan `SWA/YYMM/NNNN` per kontrak (prorata), dibayar / balik bayar / batal. Pembayaran sewa belum masuk
   Kas & Rekening (menunggu keputusan finance).

@@ -1,6 +1,7 @@
 // Tes ujung-ke-ujung lewat HTTP di database PostgreSQL tertanam (memori). Data asli tidak tersentuh.
 //   npm test
 import assert from "node:assert/strict";
+import ExcelJS from "exceljs";
 import { openDb } from "../lib/db.js";
 import { migrate } from "../lib/migrate.js";
 import { hashPassword } from "../lib/auth.js";
@@ -524,6 +525,17 @@ try {
     await fin.call("POST", `/units/rent-payments/${after.payments[0].id}/reverse`, { reason: "salah rekening" });
     after = (await viewer.call("GET", "/units/rent-bills?month=2026-09")).find((x) => x.id === b1.id);
     assert.deepEqual([after.paid, after.residual], [0, 15000000]);
+    // export lengkap (tombol di kepala halaman Unit Sewa): semua tab dalam satu file, tagihan & pembayaran sewa ikut
+    const xl = new ExcelJS.Workbook();
+    await xl.xlsx.load(Buffer.from(await viewer.call("POST", "/units/export.xlsx", { month: "2026-09", lengkap: 1 })));
+    assert.deepEqual(xl.worksheets.map((w) => w.name),
+      ["RINGKASAN UNIT", "TRIP", "HARIAN", "PER PERIODE KONTRAK", "KONTRAK SEWA", "TAGIHAN SEWA", "PEMBAYARAN SEWA"]);
+    const sheetRows = (name) => { const out = []; xl.getWorksheet(name).eachRow((r, n) => { if (n > 1) out.push(r.values.slice(1)); }); return out; };
+    const tg = sheetRows("TAGIHAN SEWA");
+    assert.deepEqual(tg.at(-1).slice(6, 9), [21000000, 0, 21000000]);   // total tagihan, dibayar, sisa
+    assert.deepEqual(sheetRows("PEMBAYARAN SEWA").map((r) => [r[0], r[4], r[6]]),
+      [[b1.number, 10000000, "Dibatalkan"], [b1.number, -10000000, "Pembalik (batal bayar)"], ["TOTAL", 0, undefined]]);
+    assert.ok(sheetRows("KONTRAK SEWA").length >= 2);
     // harga sewa sudah ditagih tidak bisa diubah di kontrak yang sama
     assert.match(await fin.call("PUT", `/units/contracts/${c1.id}`, { vehicle_id: u.vehicle_id, date_start: "2026-09-01", monthly_rent: 16000000 }, 400), /sudah ditagih/);
     // ubah jenis truk / plat dari form kontrak, hapus kontrak (yang sudah ditagih tidak bisa)
