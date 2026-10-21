@@ -99,6 +99,15 @@ export function latest() {
 export const can = (...roles) => !!state.user && roles.includes(state.user.role);
 export const canFinance = () => can("ADMIN", "FINANCE");
 export const canJob = () => can("ADMIN", "FINANCE", "OPERATIONAL");
+// membuat pengajuan vendor (DP / pelunasan / calo) & pengajuan uang kembali; menyetujui & membayar tetap FINANCE
+export const canRequest = () => can("ADMIN", "FINANCE", "OPERATIONAL");
+// perangkat dari user agent, mis. "Chrome · Windows"
+export const deviceLabel = (ua) => {
+  const s = String(ua || "");
+  const b = /Edg\//.test(s) ? "Edge" : /OPR\//.test(s) ? "Opera" : /Chrome\//.test(s) ? "Chrome" : /Firefox\//.test(s) ? "Firefox" : /Safari\//.test(s) ? "Safari" : "";
+  const o = /Android/.test(s) ? "Android" : /iPhone|iPad/.test(s) ? "iPhone / iPad" : /Windows/.test(s) ? "Windows" : /Mac OS/.test(s) ? "Mac" : /Linux/.test(s) ? "Linux" : "";
+  return [b, o].filter(Boolean).join(" · ") || (s ? s.slice(0, 40) : "-");
+};
 export const isAdmin = () => can("ADMIN");
 
 export function esc(v) {
@@ -178,13 +187,31 @@ export function openModal({ title, body, submitLabel = "Simpan", onSubmit, onOpe
     } catch (err) {
       f.querySelector(".modal-error").textContent = err.message;
     } finally {
-      btns.forEach((b) => (b.disabled = false));
+      btns.forEach((b) => (b.disabled = /\(\d+\)$/.test(b.textContent)));   // tombol yang masih hitung mundur tetap mati
     }
   };
   if (!m.open) m.showModal();
   onOpen?.(f);
 }
 export const closeModal = () => { if (modal().open) modal().close(); };
+
+// Konfirmasi yang tombolnya baru bisa diklik setelah beberapa detik (aksi penting, mis. menyetujui pengajuan buatan sendiri)
+export function confirmWait({ title, body, label = "Lanjut", seconds = 5, onConfirm }) {
+  openModal({
+    title, submitLabel: label, body,
+    onOpen: (form) => {
+      const btn = form.querySelector("button[type=submit]");
+      let left = seconds;
+      const tick = () => {
+        btn.disabled = left > 0;
+        btn.textContent = left > 0 ? `${label} (${left})` : label;
+        if (left-- > 0) setTimeout(tick, 1000);
+      };
+      tick();
+    },
+    onSubmit: async () => { await onConfirm(); window.dispatchEvent(new Event("hashchange")); },
+  });
+}
 
 // Tombol aksi: jalankan, tampilkan pesan, muat ulang halaman
 export const action = (fn, msg) => async () => {

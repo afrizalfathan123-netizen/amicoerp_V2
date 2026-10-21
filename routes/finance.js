@@ -7,7 +7,11 @@
 //     selling / cost TERBARU. DP / pelunasan hanya untuk sisi berskema 70/30 atau 50/50 (customer: job.customer_scheme,
 //     vendor: job.vendor_scheme); FULL hanya untuk sisi berskema 100%.
 //   - Fase OTHER hanya untuk biaya vendor selain trucking (calo, tol, parkir, bongkar, lainnya).
-//   - Pengajuan vendor harus disetujui ADMIN sebelum dibayar (kalau setting vendor_approval_required).
+//   - Hak akses: invoice customer, menyetujui, membayar, batal bayar, transfer = FINANCE (dan ADMIN). Pengajuan vendor
+//     (DP / pelunasan / full / calo) boleh dibuat & diajukan OPERATIONAL; OPERATIONAL juga boleh membatalkan pengajuan
+//     vendor yang belum disetujui. Pengajuan uang kembali: OPERATIONAL mengajukan, FINANCE mengonfirmasi / menolak.
+//   - Pengajuan vendor harus disetujui FINANCE sebelum dibayar (kalau setting vendor_approval_required). Menyetujui
+//     pengajuan buatan sendiri boleh, tapi harus dikonfirmasi (confirm_own) supaya tidak terklik tanpa sengaja.
 //   - Dokumen / baris yang sudah ada pembayaran tidak bisa dibatalkan sebelum pembayarannya dibalik.
 //   - Selisih tanpa tujuan (baris dokumen tanpa baris order, mis. dari impor): diarahkan ke baris order job,
 //     dijadikan saldo partner (kalau sudah dibayar), atau dibatalkan (kalau belum dibayar).
@@ -301,10 +305,87 @@ async function postMove(t, req, id) {
   return number;
 }
 
+// OPERATIONAL hanya boleh membatalkan pengajuan vendor (bukan nota kredit) yang belum disetujui; selebihnya FINANCE
+function assertCanCancel(req, m) {
+  const opsOk = m.move_type === "in_invoice" && !m.credit_note_of && ["PENDING", "REJECTED", "NOT_REQUIRED"].includes(m.approval_state)
+    && !(m.approval_state === "NOT_REQUIRED" && m.state === "posted");
+  if (!opsOk) assertRole(req, ROLES.FINANCE);
+}
+
 async function lockMove(t, id) {
   const [m] = await t.query("select * from account_move where id = $1 for update", [id]);
   if (!m) fail("Dokumen tidak ditemukan", 404);
   return m;
+}
+
+// Catat uang kembali dari vendor (dipakai FINANCE langsung, dan saat FINANCE mengonfirmasi pengajuan OPERATIONAL).
+async function recordVendorRefund(t, req, jobId, b) {
+  const [job] = await t.query("select * from job where id = $1 for update", [jobId]);
+  if (!job) fail("Job tidak ditemukan", 404);
+  if (job.state === "cancelled") fail("Job sudah dibatalkan");
+  await t.query("select id from account_move_line where id = $1 for update", [Number(b.move_line_id) || 0]);
+  const [line] = await refundableLines(t, jobId, Number(b.move_line_id) || -1);
+  if (!line) fail("Pilih pembayaran vendor job ini yang uangnya kembali");
+  const amount = money(b.amount);
+  if (!(amount > 0)) fail("Nominal uang kembali harus lebih dari 0");
+  if (amount > line.bisa + 0.004) fail(`Melebihi yang sudah dibayar dan belum dikembalikan (${rupiah(line.bisa)})`);
+  const reason = String(b.reason || "").trim();
+  if (!reason) fail("Alasan wajib diisi (mis. trip tidak jadi jalan, uang jalan dikembalikan driver)");
+  const [bank] = await t.query("select * from res_bank_account where id = $1 and active", [Number(b.bank_account_id) || 0]);
+  if (!bank) fail("Pilih rekening tempat uang kembali masuk");
+  const date = DAY.test(String(b.date || "")) ? b.date : today();
+  if (date > today()) fail("Tanggal uang kembali tidak boleh di masa depan");
+  const after = ["CANCEL_JOB", "REDUCE_COST", "KEEP_COST"].includes(b.after) ? b.after : "KEEP_COST";
+  const year = date.slice(0, 4);
+
+  const cnNumber = await nextNumber(t, `NKV/${year}`, `NKV/${year}/`);
+  const cnId = await insertRow(t, "account_move", {
+    number: cnNumber, move_type: "in_invoice", phase: line.phase, partner_id: line.partner_id, move_date: date, state: "posted",
+    payment_channel: "NORMAL", credit_note_of: line.move_id, note: `Uang kembali dari vendor (${line.number}): ${reason}`,
+    created_by: req.user.id, posted_at: new Date().toISOString(),
+  });
+  const cnLine = await insertRow(t, "account_move_line", {
+    move_id: cnId, line_no: 1, job_line_id: line.job_line_id, job_id: jobId, amount: -amount,
+    description: `Nota kredit ${line.number}: ${reason}`, payee_partner_id: line.payee_partner_id, payee_bank_name: line.payee_bank_name,
+    payee_account_number: line.payee_account_number, payee_holder: line.payee_holder, credit_of_line_id: line.move_line_id,
+  });
+  const payNumber = await nextNumber(t, `RFD/${year}`, `RFD/${year}/`);
+  const payId = await insertRow(t, "account_payment", {
+    number: payNumber, payment_type: "outbound", move_id: cnId, pay_date: date, amount: -amount, bank_account_id: bank.id,
+    note: reason, created_by: req.user.id,
+  });
+  await insertRow(t, "account_payment_line", { payment_id: payId, move_line_id: cnLine, job_id: jobId, amount: -amount, actual_payee_name: line.pihak });
+
+  if (after === "REDUCE_COST") {
+    await t.query("update job_line set amount = greatest(amount - $1, 0) where id = $2", [amount, line.job_line_id]);
+    await t.query("update job set updated_at = now() where id = $1", [jobId]);
+  }
+  if (after === "CANCEL_JOB") {
+    if (await jobOpenDocs(t, jobId)) {
+      fail("Job belum bisa dibatalkan: masih ada invoice / pengajuan / pembayaran lain di job ini. Kembalikan semua dulu, atau pilih \"cost tetap\".");
+    }
+    await t.query("update job set state = 'cancelled', updated_at = now() where id = $1", [jobId]);
+    await audit(t, req, "job", jobId, "state_cancelled", { reason: `${reason} (uang kembali ${payNumber})` });
+  }
+  await audit(t, req, "job", jobId, "vendor_refund", {
+    nota_kredit: cnNumber, uang_kembali: payNumber, dari: line.number, pihak: line.pihak, nominal: amount, rekening: bank.name, tanggal: date,
+    sesudahnya: { CANCEL_JOB: "job dibatalkan", REDUCE_COST: "cost dikurangi", KEEP_COST: "cost tetap" }[after], alasan: reason,
+  });
+  return { credit_note_id: cnId, credit_note: cnNumber, payment: payNumber };
+}
+
+// Daftar pengajuan uang kembali (OPERATIONAL -> FINANCE)
+async function refundRequests(q, { state = null, job_id = null, id = null } = {}) {
+  return q.query(
+    `select r.*, j.job_number, m.number as pengajuan, m.phase, coalesce(pt.name, ml.payee_holder) as pihak,
+            ru.display_name as requested_by_name, du.display_name as decided_by_name, cn.number as credit_note
+     from vendor_refund_request r join job j on j.id = r.job_id
+     join account_move_line ml on ml.id = r.move_line_id join account_move m on m.id = ml.move_id
+     left join res_partner pt on pt.id = ml.payee_partner_id
+     left join app_user ru on ru.id = r.requested_by left join app_user du on du.id = r.decided_by
+     left join account_move cn on cn.id = r.credit_note_id
+     where ($1::text is null or r.state = $1) and ($2::int is null or r.job_id = $2) and ($3::int is null or r.id = $3)
+     order by r.state = 'PENDING' desc, r.requested_at desc limit 500`, [state, job_id, id]);
 }
 
 export default function financeRoutes(db) {
@@ -346,9 +427,10 @@ export default function financeRoutes(db) {
 
   r.get("/moves/:id", requireRole(ROLES.READ), route((req) => loadMove(db, Number(req.params.id))));
 
-  r.post("/moves", requireRole(ROLES.FINANCE), route((req) => db.tx(async (t) => {
+  r.post("/moves", requireRole(ROLES.REQUEST), route((req) => db.tx(async (t) => {
     const b = req.body || {};
     if (!["out_invoice", "in_invoice"].includes(b.move_type)) fail("Jenis dokumen tidak dikenal");
+    if (b.move_type === "out_invoice") assertRole(req, ROLES.FINANCE);
     if (!PHASES.includes(b.phase)) fail("Fase tidak dikenal");
     if (b.move_type === "out_invoice" && b.phase === "OTHER") fail("Invoice customer tidak memakai fase OTHER");
     let partnerId = b.partner_id ? Number(b.partner_id) : null;
@@ -375,9 +457,10 @@ export default function financeRoutes(db) {
     return loadMove(t, id);
   })));
 
-  r.put("/moves/:id", requireRole(ROLES.FINANCE), route((req) => db.tx(async (t) => {
+  r.put("/moves/:id", requireRole(ROLES.REQUEST), route((req) => db.tx(async (t) => {
     const id = Number(req.params.id);
     const m = await lockMove(t, id);
+    if (m.move_type === "out_invoice") assertRole(req, ROLES.FINANCE);
     if (m.state !== "draft") fail("Hanya draft yang bisa diubah");
     const b = req.body || {};
     await t.query("update account_move set move_date = $1, due_date = $2, bank_account_id = $3, note = $4, payment_channel = $5 where id = $6",
@@ -396,17 +479,23 @@ export default function financeRoutes(db) {
     return loadMove(db, Number(req.params.id));
   }));
 
-  r.post("/moves/:id/post", requireRole(ROLES.FINANCE), route((req) => db.tx(async (t) => {
+  r.post("/moves/:id/post", requireRole(ROLES.REQUEST), route((req) => db.tx(async (t) => {
+    const [m] = await t.query("select move_type from account_move where id = $1", [Number(req.params.id)]);
+    if (m?.move_type === "out_invoice") assertRole(req, ROLES.FINANCE);
     await postMove(t, req, Number(req.params.id));
     return loadMove(t, Number(req.params.id));
   })));
 
-  // Persetujuan pengajuan vendor (ADMIN). Ditolak = dokumen batal, job bisa diajukan lagi.
-  r.post("/moves/:id/approve", requireRole(ROLES.ADMIN), route((req) => db.tx(async (t) => {
+  // Persetujuan pengajuan vendor (FINANCE / ADMIN). Ditolak = dokumen batal, job bisa diajukan lagi.
+  // Menyetujui pengajuan buatan sendiri boleh, asal dikonfirmasi (confirm_own) di layar.
+  r.post("/moves/:id/approve", requireRole(ROLES.FINANCE), route((req) => db.tx(async (t) => {
     const id = Number(req.params.id);
     const m = await lockMove(t, id);
     if (m.state !== "posted" || m.approval_state !== "PENDING") fail("Dokumen tidak sedang menunggu persetujuan");
     const approve = req.body?.approve !== false;
+    if (approve && m.created_by === req.user.id && req.body?.confirm_own !== true) {
+      fail("Pengajuan ini Anda buat sendiri. Konfirmasi dulu sebelum menyetujui.");
+    }
     if (approve) {
       await t.query("update account_move set approval_state = 'APPROVED', approved_by = $1, approved_at = now() where id = $2", [req.user.id, id]);
     } else {
@@ -419,9 +508,10 @@ export default function financeRoutes(db) {
     return loadMove(t, id);
   })));
 
-  r.post("/moves/:id/cancel", requireRole(ROLES.FINANCE), route((req) => db.tx(async (t) => {
+  r.post("/moves/:id/cancel", requireRole(ROLES.REQUEST), route((req) => db.tx(async (t) => {
     const id = Number(req.params.id);
     const m = await lockMove(t, id);
+    assertCanCancel(req, m);
     if (m.state === "cancelled") fail("Dokumen sudah dibatalkan");
     const [s] = await t.query("select amount_paid from v_move_status where move_id = $1", [id]);
     if (s.amount_paid !== 0) fail("Sudah ada pembayaran. Balik dulu pembayarannya.");
@@ -439,9 +529,10 @@ export default function financeRoutes(db) {
   })));
 
   // Batalkan satu baris (mis. satu job di batch pengajuan) tanpa membatalkan seluruh dokumen.
-  r.post("/move-lines/:id/cancel", requireRole(ROLES.FINANCE), route((req) => db.tx(async (t) => {
+  r.post("/move-lines/:id/cancel", requireRole(ROLES.REQUEST), route((req) => db.tx(async (t) => {
     const id = Number(req.params.id);
     const [l] = await t.query("select * from account_move_line where id = $1 and cancelled_at is null for update", [id]);
+    if (l) assertCanCancel(req, await lockMove(t, l.move_id));
     if (!l) fail("Baris tidak ditemukan / sudah dibatalkan");
     const [p] = await t.query("select coalesce(sum(amount), 0) as paid from account_payment_line where move_line_id = $1", [id]);
     if (p.paid !== 0) fail("Baris ini masih ada pembayaran. Balik dulu pembayarannya.");
@@ -631,61 +722,70 @@ export default function financeRoutes(db) {
   //   CANCEL_JOB  = trip tidak jadi jalan, job dibatalkan (harus bersih: semua dokumen job ini nol)
   //   REDUCE_COST = cost job dikurangi sebesar uang kembali (vendor / driver tidak memakai semuanya)
   //   KEEP_COST   = cost tetap, nanti diajukan & dibayar lagi (mis. ganti driver / trip ditunda)
-  r.post("/jobs/:id/vendor-refund", requireRole(ROLES.FINANCE), route((req) => db.tx(async (t) => {
+  r.post("/jobs/:id/vendor-refund", requireRole(ROLES.FINANCE), route((req) => db.tx((t) => recordVendorRefund(t, req, Number(req.params.id), req.body || {}))));
+
+  // Pengajuan uang kembali oleh OPERATIONAL (uang belum tentu sudah masuk): FINANCE mengonfirmasi setelah uangnya masuk.
+  r.get("/vendor-refund-requests", requireRole(ROLES.READ), route((req) => refundRequests(db, {
+    state: req.query.state || null, job_id: req.query.job_id ? Number(req.query.job_id) : null })));
+
+  r.post("/jobs/:id/vendor-refund-requests", requireRole(ROLES.REQUEST), route((req) => db.tx(async (t) => {
     const jobId = Number(req.params.id);
     const b = req.body || {};
     const [job] = await t.query("select * from job where id = $1 for update", [jobId]);
     if (!job) fail("Job tidak ditemukan", 404);
     if (job.state === "cancelled") fail("Job sudah dibatalkan");
-    await t.query("select id from account_move_line where id = $1 for update", [Number(b.move_line_id) || 0]);
     const [line] = await refundableLines(t, jobId, Number(b.move_line_id) || -1);
     if (!line) fail("Pilih pembayaran vendor job ini yang uangnya kembali");
+    const [p] = await t.query("select coalesce(sum(amount), 0) as n from vendor_refund_request where move_line_id = $1 and state = 'PENDING'", [line.move_line_id]);
+    const bisa = money(line.bisa - p.n);
     const amount = money(b.amount);
     if (!(amount > 0)) fail("Nominal uang kembali harus lebih dari 0");
-    if (amount > line.bisa + 0.004) fail(`Melebihi yang sudah dibayar dan belum dikembalikan (${rupiah(line.bisa)})`);
+    if (amount > bisa + 0.004) fail(`Melebihi yang bisa dikembalikan (${rupiah(bisa)}${p.n > 0 ? `, ${rupiah(p.n)} sudah diajukan dan menunggu konfirmasi` : ""})`);
     const reason = String(b.reason || "").trim();
     if (!reason) fail("Alasan wajib diisi (mis. trip tidak jadi jalan, uang jalan dikembalikan driver)");
-    const [bank] = await t.query("select * from res_bank_account where id = $1 and active", [Number(b.bank_account_id) || 0]);
-    if (!bank) fail("Pilih rekening tempat uang kembali masuk");
-    const date = DAY.test(String(b.date || "")) ? b.date : today();
-    if (date > today()) fail("Tanggal uang kembali tidak boleh di masa depan");
     const after = ["CANCEL_JOB", "REDUCE_COST", "KEEP_COST"].includes(b.after) ? b.after : "KEEP_COST";
-    const year = date.slice(0, 4);
+    const id = await insertRow(t, "vendor_refund_request", {
+      job_id: jobId, move_line_id: line.move_line_id, amount, after, reason, requested_by: req.user.id });
+    await audit(t, req, "job", jobId, "vendor_refund_request", { request_id: id, dari: line.number, nominal: amount, alasan: reason, sesudahnya: after });
+    return (await refundRequests(t, { id }))[0];
+  })));
 
-    const cnNumber = await nextNumber(t, `NKV/${year}`, `NKV/${year}/`);
-    const cnId = await insertRow(t, "account_move", {
-      number: cnNumber, move_type: "in_invoice", phase: line.phase, partner_id: line.partner_id, move_date: date, state: "posted",
-      payment_channel: "NORMAL", credit_note_of: line.move_id, note: `Uang kembali dari vendor (${line.number}): ${reason}`,
-      created_by: req.user.id, posted_at: new Date().toISOString(),
-    });
-    const cnLine = await insertRow(t, "account_move_line", {
-      move_id: cnId, line_no: 1, job_line_id: line.job_line_id, job_id: jobId, amount: -amount,
-      description: `Nota kredit ${line.number}: ${reason}`, payee_partner_id: line.payee_partner_id, payee_bank_name: line.payee_bank_name,
-      payee_account_number: line.payee_account_number, payee_holder: line.payee_holder, credit_of_line_id: line.move_line_id,
-    });
-    const payNumber = await nextNumber(t, `RFD/${year}`, `RFD/${year}/`);
-    const payId = await insertRow(t, "account_payment", {
-      number: payNumber, payment_type: "outbound", move_id: cnId, pay_date: date, amount: -amount, bank_account_id: bank.id,
-      note: reason, created_by: req.user.id,
-    });
-    await insertRow(t, "account_payment_line", { payment_id: payId, move_line_id: cnLine, job_id: jobId, amount: -amount, actual_payee_name: line.pihak });
+  r.post("/vendor-refund-requests/:id/confirm", requireRole(ROLES.FINANCE), route((req) => db.tx(async (t) => {
+    const [q] = await t.query("select * from vendor_refund_request where id = $1 for update", [Number(req.params.id)]);
+    if (!q) fail("Pengajuan tidak ditemukan", 404);
+    if (q.state !== "PENDING") fail("Pengajuan ini sudah diputuskan");
+    const b = req.body || {};
+    // FINANCE mengisi rekening & tanggal uang masuk; nominal boleh dikoreksi sesuai uang yang benar-benar masuk
+    const res = await recordVendorRefund(t, req, q.job_id, {
+      move_line_id: q.move_line_id, amount: b.amount ?? q.amount, bank_account_id: b.bank_account_id, date: b.date,
+      reason: q.reason + (b.note ? ` (${String(b.note).trim()})` : ""), after: b.after || q.after });
+    await t.query(
+      "update vendor_refund_request set state = 'CONFIRMED', decided_by = $1, decided_at = now(), decision_note = $2, credit_note_id = $3 where id = $4",
+      [req.user.id, b.note || null, res.credit_note_id, q.id]);
+    return res;
+  })));
 
-    if (after === "REDUCE_COST") {
-      await t.query("update job_line set amount = greatest(amount - $1, 0) where id = $2", [amount, line.job_line_id]);
-      await t.query("update job set updated_at = now() where id = $1", [jobId]);
-    }
-    if (after === "CANCEL_JOB") {
-      if (await jobOpenDocs(t, jobId)) {
-        fail("Job belum bisa dibatalkan: masih ada invoice / pengajuan / pembayaran lain di job ini. Kembalikan semua dulu, atau pilih \"cost tetap\".");
-      }
-      await t.query("update job set state = 'cancelled', updated_at = now() where id = $1", [jobId]);
-      await audit(t, req, "job", jobId, "state_cancelled", { reason: `${reason} (uang kembali ${payNumber})` });
-    }
-    await audit(t, req, "job", jobId, "vendor_refund", {
-      nota_kredit: cnNumber, uang_kembali: payNumber, dari: line.number, pihak: line.pihak, nominal: amount, rekening: bank.name, tanggal: date,
-      sesudahnya: { CANCEL_JOB: "job dibatalkan", REDUCE_COST: "cost dikurangi", KEEP_COST: "cost tetap" }[after], alasan: reason,
-    });
-    return { credit_note_id: cnId, credit_note: cnNumber, payment: payNumber };
+  r.post("/vendor-refund-requests/:id/reject", requireRole(ROLES.FINANCE), route((req) => db.tx(async (t) => {
+    const [q] = await t.query("select * from vendor_refund_request where id = $1 for update", [Number(req.params.id)]);
+    if (!q) fail("Pengajuan tidak ditemukan", 404);
+    if (q.state !== "PENDING") fail("Pengajuan ini sudah diputuskan");
+    const note = String(req.body?.reason || "").trim();
+    if (!note) fail("Alasan penolakan wajib diisi");
+    await t.query("update vendor_refund_request set state = 'REJECTED', decided_by = $1, decided_at = now(), decision_note = $2 where id = $3",
+      [req.user.id, note, q.id]);
+    await audit(t, req, "job", q.job_id, "vendor_refund_request_rejected", { request_id: q.id, alasan: note });
+    return { ok: true };
+  })));
+
+  // pembuat (atau FINANCE) menarik pengajuan yang belum diputuskan
+  r.post("/vendor-refund-requests/:id/cancel", requireRole(ROLES.REQUEST), route((req) => db.tx(async (t) => {
+    const [q] = await t.query("select * from vendor_refund_request where id = $1 for update", [Number(req.params.id)]);
+    if (!q) fail("Pengajuan tidak ditemukan", 404);
+    if (q.state !== "PENDING") fail("Pengajuan ini sudah diputuskan");
+    if (q.requested_by !== req.user.id) assertRole(req, ROLES.FINANCE);
+    await t.query("update vendor_refund_request set state = 'CANCELLED', decided_by = $1, decided_at = now() where id = $2", [req.user.id, q.id]);
+    await audit(t, req, "job", q.job_id, "vendor_refund_request_cancelled", { request_id: q.id });
+    return { ok: true };
   })));
 
   // ---------------------------------------------------------------- transfer malam (kas operasional)

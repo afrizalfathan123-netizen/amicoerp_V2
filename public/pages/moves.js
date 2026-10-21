@@ -1,7 +1,7 @@
 // Invoice customer & pengajuan vendor: daftar, buat, detail (posting, persetujuan, transfer malam, bayar, batal), cetak.
 import {
   state, api, get, view, esc, rp, tgl, jam, kv, badge, options, enumOptions, table, toast, openModal, askReason, action,
-  customers, vendors, bankLabel, num, today, debounce, bindRows, canFinance, isAdmin, PHASE_LABEL, KIND_LABEL, phaseLabel, latest, skelTable, pagedTable,
+  customers, vendors, bankLabel, num, today, debounce, bindRows, canFinance, canRequest, confirmWait, PHASE_LABEL, KIND_LABEL, phaseLabel, latest, skelTable, pagedTable,
 } from "../lib.js";
 // "DP 70%" kalau semua job di dokumen berskema sama, selain itu "DP"
 const movePhase = (m) => phaseLabel(m.phase, m.schemes && !m.schemes.includes(",") ? m.schemes : null);
@@ -20,9 +20,10 @@ async function renderMoves(type) {
   const f = JSON.parse(sessionStorage.getItem(key) || "{}");
   view().innerHTML = `
     <div class="page-head"><h1>${isInv ? "Invoice Customer" : "Pengajuan Vendor"}</h1>
-      <span class="sub">${isInv ? "Tagihan ke customer per fase (DP 70%, pelunasan, full 100%)" : "Permintaan transfer ke vendor / calo, perlu persetujuan ADMIN"}.
+      <span class="sub">${isInv ? "Tagihan ke customer per fase (DP 70%, pelunasan, full 100%)" : "Permintaan transfer ke vendor / calo: dibuat operasional / finance, disetujui & dibayar finance"}.
         Mau lihat job mana yang belum ${isInv ? "ditagih" : "diajukan"}? Buka <a href="#/${isInv ? "ar" : "ap"}">${isInv ? "AR Customer" : "AP Vendor"}</a>.</span>
-      <div class="spacer"></div><div class="actions">${canFinance() ? `<button class="primary" id="newMove">+ ${isInv ? "Invoice baru" : "Pengajuan baru"}</button>` : ""}</div></div>
+      <div class="spacer"></div><div class="actions">${(isInv ? canFinance() : canRequest()) ? `<button class="primary" id="newMove">+ ${isInv ? "Invoice baru" : "Pengajuan baru"}</button>` : ""}</div></div>
+    ${isInv ? "" : `<div id="refundReqBox"></div>`}
     <div class="panel">
       <div class="filters">
         <label>Cari<input id="mSearch" placeholder="Nomor, partner, no job" value="${esc(f.search || "")}"></label>
@@ -56,6 +57,15 @@ async function renderMoves(type) {
   el("mSearch").oninput = debounce(load);
   for (const k of ["mState", "mApproval", "mChannel", "mFrom", "mTo"]) el(k)?.addEventListener("change", load);
   el("newMove")?.addEventListener("click", () => moveForm(type));
+  // pengajuan uang kembali dari operasional yang menunggu konfirmasi finance
+  if (!isInv) get("/vendor-refund-requests?state=PENDING").then(async (rows) => {
+    const box = document.getElementById("refundReqBox");
+    if (!box || !rows.length) return;
+    const { refundRequestTable, bindRefundRequests } = await import("./jobs.js");
+    box.innerHTML = `<div class="panel warn-panel"><h2>Pengajuan uang kembali menunggu konfirmasi <span class="hint">${rows.length} pengajuan dari operasional;
+      konfirmasi setelah uangnya masuk ke rekening</span></h2>${refundRequestTable(rows)}</div>`;
+    bindRefundRequests(box);
+  }).catch(() => {});
   await load();
 }
 
@@ -213,17 +223,17 @@ export async function renderMoveDetail(id) {
       <span class="sub">${isInv ? "Invoice customer" : m.credit_note_of ? "Nota kredit vendor (uang kembali)" : "Pengajuan vendor"} &middot; ${esc(PHASE_LABEL[m.phase])}${night ? " &middot; transfer malam" : ""}</span>
       <div class="spacer"></div>
       <div class="actions">
-        ${canFinance() && m.state === "draft" ? `<button class="primary" id="postMove">Posting</button><button class="danger" id="delMove">Hapus draft</button>` : ""}
-        ${isAdmin() && m.state === "posted" && m.approval_state === "PENDING" ? `<button class="primary" id="approve">Setujui</button><button class="danger" id="reject">Tolak</button>` : ""}
+        ${(isInv ? canFinance() : canRequest()) && m.state === "draft" ? `<button class="primary" id="postMove">${isInv ? "Posting" : "Ajukan"}</button><button class="danger" id="delMove">Hapus draft</button>` : ""}
+        ${canFinance() && m.state === "posted" && m.approval_state === "PENDING" ? `<button class="primary" id="approve">Setujui</button><button class="danger" id="reject">Tolak</button>` : ""}
         ${canFinance() && night && payable && m.amount_residual > m.titipan ? `<button id="fund">Kirim dana ke kas operasional</button>` : ""}
         ${canFinance() && night && m.titipan > 0 ? `<button id="returnFund">Dana kembali dari operasional</button>` : ""}
         ${canFinance() && payable && (!night || m.titipan > 0) ? `<button class="primary" id="pay">${isInv ? "Catat pembayaran masuk" : night ? "Catat penyaluran ke vendor" : "Catat transfer"}</button>` : ""}
-        ${canFinance() && m.state === "posted" ? `<button class="danger" id="cancelMove">Batalkan</button>` : ""}
+        ${m.state === "posted" && (canFinance() || (canRequest() && !isInv && !m.credit_note_of && m.approval_state === "PENDING")) ? `<button class="danger" id="cancelMove">${canFinance() ? "Batalkan" : "Tarik pengajuan"}</button>` : ""}
         ${m.state !== "draft" ? `<a class="btn" href="#/moves/${m.id}/cetak">Cetak</a>` : ""}
         ${!isInv && !m.credit_note_of ? `<button id="waText" title="Format pengajuan untuk grup WhatsApp">Salin teks WhatsApp</button>` : ""}
       </div>
     </div>
-    ${m.state === "posted" && m.approval_state === "PENDING" ? `<div class="note-box warn-box">Menunggu persetujuan ADMIN sebelum bisa dibayar.</div>` : ""}
+    ${m.state === "posted" && m.approval_state === "PENDING" ? `<div class="note-box warn-box">Menunggu persetujuan FINANCE sebelum bisa dibayar.</div>` : ""}
     ${m.approval_state === "REJECTED" ? `<div class="note-box warn-box">Ditolak: ${esc(m.rejection_reason || "")}</div>` : ""}
     ${m.credit_note_of ? `<div class="note-box">Nota kredit untuk pengajuan <a href="#/moves/${m.credit_note_of}">${esc(m.credit_note_of_number || "")}</a>: uang yang sudah dibayar ke vendor
       dikembalikan. Membatalkan: <b>Batal bayar</b> uang kembalinya dulu, lalu <b>Batalkan</b> nota kredit ini.</div>` : ""}
@@ -276,7 +286,14 @@ export async function renderMoveDetail(id) {
   on("delMove", async () => {
     try { await api("POST", `/moves/${id}/cancel`, {}); toast("Draft dihapus"); location.hash = isInv ? "#/invoices" : "#/requests"; } catch (e) { toast(e.message, true); }
   });
-  on("approve", action(() => api("POST", `/moves/${id}/approve`, { approve: true }), "Disetujui"));
+  // menyetujui pengajuan buatan sendiri: boleh, tapi tombolnya baru aktif setelah 5 detik
+  on("approve", m.created_by === state.user.id
+    ? () => confirmWait({
+      title: `Setujui ${m.number}?`, label: "Ya, setujui", seconds: 5,
+      body: `<div class="note-box warn-box">Pengajuan ini <b>Anda buat sendiri</b>. Cek lagi job, nominal ${rp(m.amount_total)}, dan rekening penerimanya sebelum menyetujui.</div>`,
+      onConfirm: async () => { await api("POST", `/moves/${id}/approve`, { approve: true, confirm_own: true }); toast("Disetujui"); },
+    })
+    : action(() => api("POST", `/moves/${id}/approve`, { approve: true }), "Disetujui"));
   on("reject", () => askReason("Tolak pengajuan", "Pengajuan batal, job bisa diajukan lagi.", (reason) => api("POST", `/moves/${id}/approve`, { approve: false, reason }), "Tolak"));
   on("cancelMove", () => askReason(`Batalkan ${m.number}`, "Hanya bisa kalau belum ada pembayaran (atau sudah dibalik) dan tidak ada dana di kas operasional.",
     (reason) => api("POST", `/moves/${id}/cancel`, { reason }), "Batalkan dokumen"));

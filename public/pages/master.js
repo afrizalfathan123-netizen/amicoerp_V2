@@ -118,7 +118,7 @@ async function renderSettings() {
       <div class="wide sig-box"><span>Tanda tangan di invoice (opsional, gambar PNG / JPG)</span>
         <div id="sigPreview">${s.invoice_signature ? `<img src="${esc(s.invoice_signature)}" alt="tanda tangan">` : `<span class="muted">Belum ada. Tanpa gambar, invoice dicetak dengan ruang kosong untuk tanda tangan basah.</span>`}</div>
         <input type="file" id="sigFile" accept="image/png,image/jpeg"> ${s.invoice_signature ? `<button type="button" class="small danger" id="sigDel">Hapus tanda tangan</button>` : ""}</div>
-      <label class="check"><input type="checkbox" name="vendor_approval_required" ${s.vendor_approval_required !== false ? "checked" : ""}> Pengajuan vendor perlu persetujuan ADMIN</label>
+      <label class="check"><input type="checkbox" name="vendor_approval_required" ${s.vendor_approval_required !== false ? "checked" : ""}> Pengajuan vendor perlu persetujuan FINANCE</label>
       <label class="check wide"><input type="checkbox" name="require_gate_for_billing" ${s.require_gate_for_billing !== false ? "checked" : ""}> Invoice customer dan pelunasan / full vendor wajib kode tugas + jam gate out (job rencana hanya boleh DP / calo vendor)</label>
       <label>Target resi SJ dari driver (hari setelah gate in)<input type="number" min="0" name="sj_target_resi_days" value="${esc(s.sj_target_resi_days ?? 2)}"></label>
       <label>Target SJ di kurir (hari)<input type="number" min="0" name="sj_target_kurir_days" value="${esc(s.sj_target_kurir_days ?? 4)}"></label>

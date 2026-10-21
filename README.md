@@ -179,12 +179,26 @@ Uang tidak disentuh. Isian buatan v1 (DRIVER DUMMY, HP 08000000.., resi AUTO-SJ.
 
 | Role | Boleh |
 |---|---|
-| ADMIN | semua, termasuk user, persetujuan pengajuan vendor, pengaturan perusahaan |
-| FINANCE | invoice, pengajuan, pembayaran, transfer, master partner / rekening / price book, edit job |
-| OPERATIONAL | buat & edit job, perjalanan (gate, posisi, SJ), lokasi, kendaraan, SLA; keuangan hanya lihat |
+| ADMIN | semua, termasuk user, pengaturan perusahaan, impor data |
+| FINANCE | invoice customer, **menyetujui & membayar** pengajuan vendor, batal bayar, uang kembali (langsung / konfirmasi pengajuan operasional), transfer, master partner / rekening / price book, job |
+| OPERATIONAL | buat & edit job (cost; selling boleh, utamanya diisi finance), tracker / gate / SJ, lokasi, kendaraan, SLA, **membuat & mengajukan** pengajuan vendor (DP, pelunasan, full, calo) dan **pengajuan uang kembali**; boleh menarik pengajuan yang belum disetujui; halaman keuangan hanya lihat |
 | VIEWER | hanya lihat |
 
+Menyetujui pengajuan buatan sendiri boleh, tapi tombol "Ya, setujui" baru aktif setelah 5 detik (server juga meminta konfirmasi).
 Semua perubahan penting tercatat di audit (menu User & Audit, dan riwayat di halaman job).
+
+### Login & keamanan
+- Password minimal 8 karakter. Password dari ADMIN (user baru / reset) = sementara: user wajib menggantinya saat login pertama,
+  sebelum itu aplikasi tidak bisa dipakai. Reset password oleh ADMIN mengeluarkan user dari semua perangkat.
+- Token sesi di cookie httpOnly; di database hanya disimpan hash sha256-nya. Sesi habis setelah `SESSION_DAYS` (7) hari, atau
+  kalau tidak dipakai `SESSION_IDLE_HOURS` (8) jam.
+- Menu user > **Sesi & perangkat**: daftar perangkat yang sedang masuk, keluarkan satu, atau keluar dari semua perangkat lain.
+  ADMIN bisa mengeluarkan user dari semua perangkat (menu User). Ganti password = perangkat lain dikeluarkan.
+- **Catatan login** (menu User & Audit): login, login gagal (username tidak ada / password salah / nonaktif), keluar, ganti
+  password, beserta IP & perangkat. Password tidak pernah dicatat.
+- **API REST Supabase dikunci** setiap server start (`lockSupabaseApi` di `lib/migrate.js`): semua hak role `anon` /
+  `authenticated` dicabut (juga untuk tabel baru) dan RLS dinyalakan di tabel milik user ERP. ERP tidak memakai API itu;
+  browser hanya bicara dengan server ERP. Di laptop (PGlite) langkah ini otomatis dilewati.
 
 ## Model data
 
@@ -213,7 +227,7 @@ JOB REGISTRATION), kurang transfer, jurnal kas, umur tagihan, titipan kas operas
   tambahan), jadi saldo partner (kalau sudah dibayar), atau dibatalkan (kalau belum dibayar).
 - Calo / biaya lain diajukan dengan fase "Calo / biaya lain"; di laporan finance ikut kolom 30% (atau 100%).
 - Selling / cost tidak bisa diturunkan di bawah yang sudah ditagih / diajukan; top-up wajib alasan.
-- Pengajuan vendor perlu persetujuan ADMIN sebelum dibayar (bisa dimatikan di pengaturan).
+- Pengajuan vendor dibuat OPERATIONAL / FINANCE, perlu persetujuan FINANCE sebelum dibayar (bisa dimatikan di pengaturan). Menyetujui pengajuan buatan sendiri boleh, dengan konfirmasi 5 detik.
 - Transfer malam dibayar dari kas operasional, maksimal sebesar dana yang sudah dikirim ke sana.
 - Dokumen / baris yang sudah dibayar baru bisa dibatalkan setelah pembayarannya dibalik.
 

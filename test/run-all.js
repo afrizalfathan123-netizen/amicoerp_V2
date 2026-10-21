@@ -3,8 +3,8 @@
 import assert from "node:assert/strict";
 import ExcelJS from "exceljs";
 import { openDb } from "../lib/db.js";
-import { migrate } from "../lib/migrate.js";
-import { hashPassword } from "../lib/auth.js";
+import { migrate, lockSupabaseApi } from "../lib/migrate.js";
+import { hashPassword, tokenHash } from "../lib/auth.js";
 import { createApp } from "../server.js";
 const tgl = (v) => (v ? String(v).slice(0, 10) : "");
 
@@ -29,7 +29,7 @@ function client() {
     else assert.equal(res.status, expect, `${method} ${url} seharusnya ${expect}, dapat ${res.status} ${data.error || ""}`);
     return expect === "ok" ? data : data.error;
   };
-  return { call, login: (u) => call("POST", "/login", { username: u, password: "rahasia123" }) };
+  return { call, login: (u, password = "rahasia123") => call("POST", "/login", { username: u, password }), cookie: () => cookie.split("=")[1] };
 }
 const admin = client(), fin = client(), ops = client(), viewer = client(), anon = client();
 let passed = 0;
@@ -41,6 +41,49 @@ try {
     assert.match(await anon.call("GET", "/jobs", null, 401), /login/);
     for (const [c, u] of [[admin, "admin"], [fin, "fin"], [ops, "ops"], [viewer, "viewer"]]) await c.login(u);
     assert.equal((await fin.call("GET", "/me")).role, "FINANCE");
+  });
+
+  await step("akun & sesi: wajib ganti password di login pertama, token sesi di-hash, sesi habis kalau tidak dipakai, keluar dari perangkat lain, catatan login", async () => {
+    // akun baru dari ADMIN: password sementara, wajib diganti dulu
+    assert.match(await admin.call("POST", "/users", { username: "budi", display_name: "Budi", role: "OPERATIONAL", password: "pendek" }, 400), /minimal 8/);
+    const { id: budiId } = await admin.call("POST", "/users", { username: "budi", display_name: "Budi", role: "OPERATIONAL", password: "sementara1" });
+    const hp = client(), laptop = client();
+    assert.equal((await hp.login("budi", "sementara1")).must_change_password, true);
+    assert.match(await hp.call("GET", "/jobs", null, 403), /Ganti password/);
+    assert.equal((await hp.call("GET", "/me")).must_change_password, true);
+    assert.match(await hp.call("POST", "/me/password", { old_password: "sementara1", new_password: "baru" }, 400), /minimal 8/);
+    assert.match(await hp.call("POST", "/me/password", { old_password: "sementara1", new_password: "sementara1" }, 400), /beda/);
+    await hp.call("POST", "/me/password", { old_password: "sementara1", new_password: "budi-rahasia" });
+    await hp.call("GET", "/jobs?limit=1");       // sesi ini tetap, tidak perlu login ulang
+    // di database hanya hash token; cookie aslinya tidak ada di sana
+    assert.equal((await db.query("select count(*)::int n from app_session where token = $1", [hp.cookie()]))[0].n, 0);
+    assert.equal((await db.query("select count(*)::int n from app_session where token = $1", [tokenHash(hp.cookie())]))[0].n, 1);
+    // dua perangkat; keluar dari perangkat lain
+    await laptop.login("budi", "budi-rahasia");
+    const ses = await hp.call("GET", "/me/sessions");
+    assert.deepEqual(ses.map((x) => x.current).sort(), [false, true]);
+    assert.match(await hp.call("DELETE", `/me/sessions/${ses.find((x) => x.current).id}`, null, 400), /sedang dipakai/);
+    assert.equal((await hp.call("POST", "/me/sessions/logout-others")).removed, 1);
+    assert.match(await laptop.call("GET", "/jobs", null, 401), /login/);
+    // sesi yang tidak dipakai lebih dari 8 jam habis
+    await laptop.login("budi", "budi-rahasia");
+    await db.query("update app_session set last_seen_at = now() - interval '9 hours' where token = $1", [tokenHash(laptop.cookie())]);
+    assert.match(await laptop.call("GET", "/me", null, 401), /login/);
+    await hp.call("GET", "/me");
+    // ADMIN: reset password = wajib ganti lagi + semua sesi keluar; keluarkan semua sesi; catatan login
+    await anon.call("POST", "/login", { username: "budi", password: "salah-salah" }, 401);
+    await admin.call("PUT", `/users/${budiId}`, { password: "reset12345" });
+    assert.match(await hp.call("GET", "/me", null, 401), /login/);
+    assert.equal((await hp.login("budi", "reset12345")).must_change_password, true);
+    await laptop.login("budi", "reset12345");
+    assert.equal((await admin.call("POST", `/users/${budiId}/logout-all`)).removed, 2);
+    assert.match(await viewer.call("GET", "/login-events", null, 403), /akses/);
+    const ev = await admin.call("GET", `/login-events?user_id=${budiId}`);
+    assert.ok(ev.some((e) => e.event === "LOGIN_GAGAL" && e.note === "password salah"));
+    assert.ok(["LOGIN", "GANTI_PASSWORD", "KELUAR_SEMUA"].every((k) => ev.some((e) => e.event === k)));
+    assert.ok(!JSON.stringify(ev).includes("salah-salah"));     // password tidak pernah dicatat
+    const failed = (await admin.call("GET", "/login-events")).find((e) => e.event === "LOGIN_GAGAL" && e.username === "admin");
+    assert.equal(failed.note, "password salah");
   });
 
   const id = {};
@@ -88,13 +131,15 @@ try {
 
   const P1 = await line(J1.id, "PURCHASE", "TRUCKING");
   let dpV, stlV;
-  await step("pengajuan DP vendor: posting -> menunggu ADMIN -> FINANCE tidak bisa setuju -> ADMIN setuju -> bayar", async () => {
+  await step("pengajuan DP vendor: posting -> menunggu persetujuan -> OPERATIONAL tidak bisa setuju, buatan sendiri dikonfirmasi -> disetujui -> bayar", async () => {
     const el = await fin.call("GET", "/moves/eligible?move_type=in_invoice&phase=DP");
     assert.equal(el.find((e) => e.job_line_id === P1).suggested, 12600000);
     dpV = await createMove({ move_type: "in_invoice", phase: "DP", move_date: "2026-09-15", lines: [{ job_id: J1.id, amount: 12600000 }] });
     assert.deepEqual([dpV.number, dpV.approval_state, dpV.lines[0].payee_holder], ["REQ/2026/0001", "PENDING", "CV Sinar Jaya"]);
     assert.match(await fin.call("POST", `/moves/${dpV.id}/pay`, { bank_account_id: id.BCA }, 400), /belum disetujui/);
-    assert.match(await fin.call("POST", `/moves/${dpV.id}/approve`, {}, 403), /akses/);
+    // OPERATIONAL tidak bisa menyetujui; FINANCE bisa, tapi pengajuan buatan sendiri harus dikonfirmasi dulu
+    assert.match(await ops.call("POST", `/moves/${dpV.id}/approve`, {}, 403), /akses/);
+    assert.match(await fin.call("POST", `/moves/${dpV.id}/approve`, {}, 400), /buat sendiri/);
     await admin.call("POST", `/moves/${dpV.id}/approve`, {});
     dpV = await fin.call("POST", `/moves/${dpV.id}/pay`, { bank_account_id: id.BCA, pay_date: "2026-09-16" });
     assert.equal(dpV.amount_residual, 0);
@@ -906,6 +951,79 @@ try {
     assert.deepEqual([dC.balance.requested, dC.balance.paid], [1700000, 1700000]);
     assert.equal(dC.ledger.reduce((a, x) => a + (x.arah === "MASUK" ? x.nominal : -x.nominal), 0), -1700000);
     assert.equal((await fin.call("GET", `/jobs/${C.id}/vendor-refund`))[0].bisa, 1700000);
+  });
+
+  await step("hak akses: OPERATIONAL membuat & mengajukan pengajuan vendor, FINANCE menyetujui & membayar; pengajuan uang kembali dikonfirmasi FINANCE", async () => {
+    const mk = (rit) => ops.call("POST", "/jobs", { job_date: "2026-10-14", customer_id: id.KOTA, vendor_id: id.SINAR, vendor_bank_id: id.SINAR_BANK,
+      pol_id: id.CKR, pod_id: id.CKG, truck_type: "CDDL", delivery_scope: "INNERCITY", rit_number: rit, plate_number: "B 6 HA" });
+    const [X, Y] = [await mk(21), await mk(22)];
+    // OPERATIONAL: pengajuan vendor boleh, invoice customer tidak; bayar & setujui tidak
+    assert.match(await ops.call("POST", "/moves", { move_type: "out_invoice", phase: "FULL", bank_account_id: id.BCA, lines: [{ job_id: X.id, amount: 100 }] }, 403), /akses/);
+    let rq = await ops.call("POST", "/moves", { move_type: "in_invoice", phase: "FULL", move_date: "2026-10-14", post: true, lines: [{ job_id: X.id, amount: 1700000 }] });
+    assert.deepEqual([rq.state, rq.approval_state], ["posted", "PENDING"]);
+    assert.match(await ops.call("POST", `/moves/${rq.id}/approve`, {}, 403), /akses/);
+    assert.match(await ops.call("POST", `/moves/${rq.id}/pay`, { bank_account_id: id.BCA }, 403), /akses/);
+    // OPERATIONAL boleh menarik pengajuannya selama belum disetujui
+    const ry = await ops.call("POST", "/moves", { move_type: "in_invoice", phase: "FULL", move_date: "2026-10-14", post: true, lines: [{ job_id: Y.id, amount: 1700000 }] });
+    await ops.call("POST", `/moves/${ry.id}/cancel`, { reason: "salah job" });
+    // FINANCE menyetujui pengajuan buatan OPERATIONAL tanpa konfirmasi tambahan, lalu bayar; sesudah disetujui OPERATIONAL tidak bisa membatalkan
+    await fin.call("POST", `/moves/${rq.id}/approve`, {});
+    assert.match(await ops.call("POST", `/moves/${rq.id}/cancel`, { reason: "x" }, 403), /akses/);
+    rq = await fin.call("POST", `/moves/${rq.id}/pay`, { bank_account_id: id.BCA, pay_date: "2026-10-14" });
+    // pengajuan buatan FINANCE sendiri: harus dikonfirmasi
+    const own = await fin.call("POST", "/moves", { move_type: "in_invoice", phase: "FULL", move_date: "2026-10-14", post: true, lines: [{ job_id: Y.id, amount: 1700000 }] });
+    assert.match(await fin.call("POST", `/moves/${own.id}/approve`, {}, 400), /buat sendiri/);
+    assert.equal((await fin.call("POST", `/moves/${own.id}/approve`, { confirm_own: true })).approval_state, "APPROVED");
+
+    // pengajuan uang kembali: OPERATIONAL mengajukan (tanpa rekening), FINANCE mengonfirmasi setelah uang masuk
+    const [line] = await ops.call("GET", `/jobs/${X.id}/vendor-refund`);
+    assert.match(await ops.call("POST", `/jobs/${X.id}/vendor-refund`, { move_line_id: line.move_line_id, amount: 1, bank_account_id: id.BCA, reason: "x" }, 403), /akses/);
+    const req1 = await ops.call("POST", `/jobs/${X.id}/vendor-refund-requests`, { move_line_id: line.move_line_id, amount: 1000000, reason: "solar sisa", after: "REDUCE_COST" });
+    assert.deepEqual([req1.state, req1.requested_by_name, req1.pengajuan], ["PENDING", "ops", rq.number]);
+    // yang sudah diajukan ikut dihitung: sisa yang bisa diajukan 700.000
+    assert.match(await ops.call("POST", `/jobs/${X.id}/vendor-refund-requests`, { move_line_id: line.move_line_id, amount: 800000, reason: "x" }, 400), /menunggu konfirmasi/);
+    const req2 = await ops.call("POST", `/jobs/${X.id}/vendor-refund-requests`, { move_line_id: line.move_line_id, amount: 700000, reason: "dobel" });
+    assert.equal((await fin.call("GET", "/vendor-refund-requests?state=PENDING")).filter((x) => x.job_id === X.id).length, 2);
+    // ditarik pembuatnya / ditolak FINANCE; OPERATIONAL lain tidak bisa mengonfirmasi
+    await ops.call("POST", `/vendor-refund-requests/${req2.id}/cancel`, {});
+    assert.match(await ops.call("POST", `/vendor-refund-requests/${req1.id}/confirm`, { bank_account_id: id.BCA }, 403), /akses/);
+    assert.match(await fin.call("POST", `/vendor-refund-requests/${req1.id}/confirm`, {}, 400), /rekening/);
+    const ok = await fin.call("POST", `/vendor-refund-requests/${req1.id}/confirm`, { bank_account_id: id.BCA, date: "2026-10-15", amount: 900000, note: "masuk 900rb" });
+    assert.match(ok.credit_note, /^NKV\//);
+    const dX = await fin.call("GET", `/jobs/${X.id}`);
+    assert.deepEqual([dX.balance.cost, dX.balance.paid, dX.refund_requests.map((r) => [r.state, r.credit_note])],
+      [800000, 800000, [["CANCELLED", null], ["CONFIRMED", ok.credit_note]]]);
+    assert.match(await fin.call("POST", `/vendor-refund-requests/${req1.id}/reject`, { reason: "x" }, 400), /sudah diputuskan/);
+    const req3 = await ops.call("POST", `/jobs/${X.id}/vendor-refund-requests`, { move_line_id: line.move_line_id, amount: 100000, reason: "coba" });
+    assert.match(await fin.call("POST", `/vendor-refund-requests/${req3.id}/reject`, {}, 400), /Alasan/);
+    await fin.call("POST", `/vendor-refund-requests/${req3.id}/reject`, { reason: "uang belum masuk" });
+    assert.equal((await fin.call("GET", `/vendor-refund-requests?job_id=${X.id}`)).find((x) => x.id === req3.id).decision_note, "uang belum masuk");
+  });
+
+  await step("API REST Supabase dikunci: anon / authenticated tidak punya hak apa pun, tabel ber-RLS, server ERP tetap jalan", async () => {
+    // database tiruan Supabase: role anon & authenticated dengan hak bawaan Supabase
+    const sb = await openDb({ memory: true });
+    await sb.exec(`create role anon; create role authenticated;
+      alter default privileges in schema public grant all on tables to anon, authenticated;
+      grant usage on schema public to anon, authenticated;`);
+    await migrate(sb, { log: () => {} });
+    const priv = async (table) => (await sb.query(
+      `select has_table_privilege('anon', $1, 'select') as anon, has_table_privilege('authenticated', $1, 'insert') as auth`, [table]))[0];
+    assert.deepEqual(await priv("public.job"), { anon: false, auth: false });
+    assert.deepEqual(await priv("public.v_cash_ledger"), { anon: false, auth: false });
+    assert.deepEqual(await priv("public.app_user"), { anon: false, auth: false });
+    const noRls = await sb.query(`select c.relname from pg_class c join pg_namespace n on n.oid = c.relnamespace
+      where n.nspname = 'public' and c.relkind = 'r' and not c.relrowsecurity`);
+    assert.deepEqual(noRls, []);
+    // tabel baru nanti juga tidak terbuka untuk anon, dan pemilik (server ERP) tetap bisa baca tulis
+    await sb.exec("create table tabel_baru (x int); insert into tabel_baru values (1)");
+    assert.equal((await priv("public.tabel_baru")).anon, false);
+    assert.equal(await lockSupabaseApi(sb), 1);
+    assert.equal((await sb.query("select count(*)::int n from tabel_baru"))[0].n, 1);
+    assert.equal((await sb.query("select count(*)::int n from product"))[0].n > 0, true);
+    await sb.close();
+    // database biasa (laptop): tidak diubah
+    assert.equal(await lockSupabaseApi(db), 0);
   });
 
   await step("ringan: jawaban dikompresi, file tampilan tanpa cek sesi, ringkasan status cocok dengan daftar job", async () => {

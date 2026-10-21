@@ -1,6 +1,6 @@
 // AR Customer / AP Vendor per job: mana yang belum ditagih (diajukan), sudah ditagih belum dibayar, belum bisa ditagih, lunas.
 // Ditulis untuk orang baru: setiap fase ditulis lengkap (DP 70%, Pelunasan 30%, Full 100%) dengan nominal & langkah berikutnya.
-import { get, view, esc, rp, tgl, tile, toast, openModal, enumOptions, canFinance, state, phaseLabel, SCHEME_LABEL, SCHEME_SHORT, STAGE_LABEL, bindRows, skelTable, skelTiles } from "../lib.js";
+import { get, view, esc, rp, tgl, tile, toast, openModal, enumOptions, canFinance, canRequest, state, phaseLabel, SCHEME_LABEL, SCHEME_SHORT, STAGE_LABEL, bindRows, skelTable, skelTiles } from "../lib.js";
 import { xlTable } from "../xlfilter.js";
 import { moveForm } from "./moves.js";
 
@@ -210,7 +210,7 @@ async function renderBilling(side) {
     box.innerHTML = `<div class="note-box action-box"><span><b>${rp(sel.length)} job dicentang.</b>
       ${phases.length ? "" : ` Tidak ada fase yang bisa ${t.acting} sekarang untuk job ini.`}
       ${blockedCust ? " Invoice dibuat per customer: centang job dari satu customer saja." : ""}</span><span class="spacer"></span>
-      ${canFinance() ? phases.map((k) => `<button type="button" class="small ${blockedCust ? "" : "primary"}" data-make="${k}" ${blockedCust ? "disabled" : ""}>
+      ${(side === "SALE" ? canFinance() : canRequest()) ? phases.map((k) => `<button type="button" class="small ${blockedCust ? "" : "primary"}" data-make="${k}" ${blockedCust ? "disabled" : ""}>
         ${t.make} ${esc(k === "OTHER" ? "calo / biaya lain" : phaseLabel(k, sel.find((j) => j.ph[k])?.scheme))} (${jobsOf(k).length} job, ${rp(amount(k))})</button>`).join("") : ""}
       <button type="button" class="small" id="bClearSel">Hapus centang</button></div>`;
     box.querySelectorAll("[data-make]").forEach((b) => (b.onclick = () => {

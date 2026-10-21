@@ -9,6 +9,7 @@
 //   npm run user:add -- ... --online) tanpa membuat npm start / tes di laptop ikut menulis ke production.
 //   PORT           default 3200
 //   SESSION_DAYS   lama login berlaku, default 7 hari
+//   SESSION_IDLE_HOURS  sesi habis kalau tidak dipakai selama ini, default 8 jam
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -38,6 +39,7 @@ export const CONFIG = {
   dataDirArg: Boolean(arg("data-dir")),
   port: Number(arg("port") || process.env.PORT || 3200),
   sessionDays: Number(process.env.SESSION_DAYS || 7),
+  sessionIdleHours: Number(process.env.SESSION_IDLE_HOURS || 8),
   timezone: "Asia/Jakarta",
   onCloud,
   online,

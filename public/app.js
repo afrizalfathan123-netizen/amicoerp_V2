@@ -1,5 +1,5 @@
 // ERP AMICO v2: router, menu sesuai role, login.
-import { state, api, get, esc, view, toast, loadMaster, openModal, closeModal, ROLE_LABEL, can, icon, newNavigation, skeleton } from "./lib.js";
+import { state, api, get, esc, view, toast, loadMaster, openModal, closeModal, ROLE_LABEL, can, icon, newNavigation, skeleton, table, jam, deviceLabel } from "./lib.js";
 import { startFox } from "./fox.js";
 import { parseDateTime } from "./wa-paste.js";
 
@@ -76,7 +76,7 @@ function renderNav(activeKey) {
         <span class="who"><b>${esc(state.user.display_name)}</b><small>${esc(ROLE_LABEL[state.user.role])} · @${esc(state.user.username)}</small></span>
         ${icon("chevron", 16)}
       </summary>
-      <div class="user-actions"><a href="#" id="changePw">Ganti password</a>
+      <div class="user-actions"><a href="#" id="changePw">Ganti password</a><a href="#" id="mySessions">Sesi &amp; perangkat</a>
         <a href="#" id="foxToggle">${startFox().enabled() ? "Matikan" : "Nyalakan"} rubah</a><a href="#" id="logout">Keluar</a></div>
     </details>`;
   const { group, label } = navInfo(activeKey);
@@ -112,11 +112,75 @@ function renderNav(activeKey) {
         <label>Password baru (min. 8)<input type="password" name="new_password" minlength="8" required></label></div>`,
       onSubmit: async (d) => {
         await api("POST", "/me/password", d);
-        toast("Password diganti, silakan login lagi");
-        state.user = null;
-        location.hash = "#/login";
+        toast("Password diganti. Perangkat lain dikeluarkan, perangkat ini tetap masuk.");
       },
     });
+  };
+  document.getElementById("mySessions").onclick = (e) => { e.preventDefault(); sessionsModal(); };
+}
+
+// Sesi login saya: perangkat / browser yang sedang masuk, keluarkan satu atau semua perangkat lain
+async function sessionsModal() {
+  const rows = await get("/me/sessions");
+  openModal({
+    title: "Sesi & perangkat",
+    wide: true,
+    body: `${table("<th>Perangkat</th><th>IP</th><th>Masuk</th><th>Terakhir dipakai</th><th></th>",
+      rows.map((s) => `<tr><td><b>${esc(deviceLabel(s.user_agent))}</b>${s.current ? ` <span class="badge posted">perangkat ini</span>` : ""}</td>
+        <td>${esc(s.ip || "-")}</td><td>${jam(s.created_at)}</td><td>${jam(s.last_seen_at)}</td>
+        <td>${s.current ? "" : `<button type="button" class="small danger" data-kill="${s.id}">Keluarkan</button>`}</td></tr>`).join(""), "Tidak ada sesi")}
+      <div class="note-box">Sesi habis sendiri kalau tidak dipakai beberapa jam. Ada perangkat yang tidak Anda kenal? Keluarkan, lalu ganti password.</div>`,
+    extraButtons: rows.length > 1 ? `<button type="button" class="danger" id="killOthers">Keluar dari semua perangkat lain</button>` : "",
+    onOpen: (form) => {
+      form.querySelectorAll("[data-kill]").forEach((b) => (b.onclick = async () => {
+        try { await api("DELETE", `/me/sessions/${b.dataset.kill}`); toast("Perangkat dikeluarkan"); sessionsModal(); } catch (err) { toast(err.message, true); }
+      }));
+      form.querySelector("#killOthers")?.addEventListener("click", async () => {
+        try { const r = await api("POST", "/me/sessions/logout-others"); toast(`${r.removed} perangkat lain dikeluarkan`); sessionsModal(); } catch (err) { toast(err.message, true); }
+      });
+    },
+  });
+}
+
+// Akun baru / password direset ADMIN: wajib ganti password dulu sebelum memakai aplikasi
+function renderForcePassword() {
+  document.getElementById("sidebar").hidden = true;
+  document.getElementById("topbar").hidden = true;
+  view().innerHTML = `
+    <div class="login-box">
+      <div class="brand-login"><span class="brand-mark">A</span><b>amico</b><small>ERP v2 · Logistik</small></div>
+      <form id="forcePwForm" class="panel">
+        <div class="eyebrow">Keamanan akun</div>
+        <h2 class="login-title">Ganti password dulu</h2>
+        <p class="muted">Halo ${esc(state.user.display_name)}, password Anda dibuat oleh ADMIN. Buat password baru milik Anda sendiri (minimal 8 karakter).</p>
+        <label>Password dari ADMIN<input type="password" name="old_password" autocomplete="current-password" required></label>
+        <label>Password baru<input type="password" name="new_password" minlength="8" autocomplete="new-password" required></label>
+        <label>Ulangi password baru<input type="password" name="again" minlength="8" autocomplete="new-password" required></label>
+        <div class="modal-error" id="forcePwError"></div>
+        <button class="primary" type="submit">Simpan password</button>
+        <a href="#" id="forcePwLogout" class="muted">Keluar</a>
+      </form>
+    </div>`;
+  document.getElementById("forcePwForm").onsubmit = async (e) => {
+    e.preventDefault();
+    const f = e.target;
+    const err = document.getElementById("forcePwError");
+    if (f.new_password.value !== f.again.value) { err.textContent = "Password baru tidak sama"; return; }
+    try {
+      await api("POST", "/me/password", { old_password: f.old_password.value, new_password: f.new_password.value });
+      state.user.must_change_password = false;
+      await loadMaster();
+      toast("Password baru disimpan");
+      location.hash = "#/dashboard";
+      router();
+    } catch (x) { err.textContent = x.message; }
+  };
+  document.getElementById("forcePwLogout").onclick = async (e) => {
+    e.preventDefault();
+    await api("POST", "/logout").catch(() => {});
+    state.user = null;
+    location.hash = "#/login";
+    router();
   };
 }
 
@@ -140,6 +204,7 @@ function renderLogin() {
     const f = e.target;
     try {
       state.user = await api("POST", "/login", { username: f.username.value, password: f.password.value });
+      if (state.user.must_change_password) { renderForcePassword(); return; }
       await loadMaster();
       location.hash = "#/dashboard";
     } catch (err) {
@@ -162,6 +227,7 @@ async function router() {
   if (!state.user) {
     try {
       state.user = await get("/me");
+      if (state.user.must_change_password) return renderForcePassword();
       await loadMaster();
     } catch {
       if (hash !== "#/login") location.hash = "#/login";

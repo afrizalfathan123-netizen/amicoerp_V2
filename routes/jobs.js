@@ -323,6 +323,11 @@ export default function jobRoutes(db) {
       sj_deliveries: await db.query(
         `select d.* from sj_delivery d join sj_delivery_line l on l.delivery_id = d.id where l.job_id = $1 order by d.id`, [id]),
       unassigned: await db.query("select * from v_unassigned where job_id = $1 order by move_date, move_line_id", [id]),
+      refund_requests: await db.query(
+        `select r.*, m.number as pengajuan, ru.display_name as requested_by_name, du.display_name as decided_by_name, cn.number as credit_note
+         from vendor_refund_request r join account_move_line ml on ml.id = r.move_line_id join account_move m on m.id = ml.move_id
+         left join app_user ru on ru.id = r.requested_by left join app_user du on du.id = r.decided_by left join account_move cn on cn.id = r.credit_note_id
+         where r.job_id = $1 order by r.id desc`, [id]),
       // unit sewa: hari trip, sewa teralokasi, untung setelah sewa
       unit: (await db.query(
         `select t.*, v.plate_number, coalesce(tc.days, 0) as days, coalesce(tc.rent_cost, 0) as rent_cost

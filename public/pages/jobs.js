@@ -1,7 +1,7 @@
 // Job: daftar, form (operasional + harga), detail (perjalanan, baris order, dokumen, jurnal kas, riwayat).
 import {
   state, api, get, view, esc, rp, tgl, jam, kv, tile, badge, options, enumOptions, table, toast, openModal, askReason,
-  action, customers, vendors, partnerBanksOf, locLabel, num, today, debounce, bindRows, canJob, canFinance,
+  action, customers, vendors, partnerBanksOf, locLabel, num, today, debounce, bindRows, canJob, canFinance, canRequest,
   KIND_LABEL, PHASE_LABEL, phaseLabel, SELLING_MODES, STAGE_LABEL, stageBadge, SJ_STATUS_LABEL, SJ_LATE_LABEL, BILL_LABEL, isAdmin, SCHEME_LABEL, SCHEME_SHORT, dtLocal, fromDtLocal, loadMaster,
   latest, skelTable, skelTiles,
 } from "../lib.js";
@@ -503,7 +503,7 @@ export async function renderJobDetail(id) {
         <button id="topup">Top-up cost</button>
         ${j.state === "confirmed" ? `<button id="doneJob">Tandai selesai</button>` : `<button id="reopenJob">Buka lagi</button>`}
         <button class="danger" id="cancelJob">Batalkan job</button>` : ""}
-        ${canFinance() && j.state !== "cancelled" && b.paid > 0 ? `<button id="vendorRefund" title="Uang yang sudah dibayar ke vendor / driver dikembalikan (trip tidak jadi jalan, atau hanya terpakai sebagian)">Uang kembali dari vendor</button>` : ""}
+        ${canRequest() && j.state !== "cancelled" && b.paid > 0 ? `<button id="vendorRefund" title="Uang yang sudah dibayar ke vendor / driver dikembalikan (trip tidak jadi jalan, atau hanya terpakai sebagian)">${canFinance() ? "Uang kembali dari vendor" : "Ajukan uang kembali"}</button>` : ""}
       </div>
     </div>
     ${d.status ? `<div class="steps">${[
@@ -585,6 +585,8 @@ export async function renderJobDetail(id) {
           <td>${esc(PHASE_LABEL[m.phase])}</td><td>${tgl(m.move_date)}</td><td>${esc(m.partner || "")}</td>
           <td class="num">${m.cancelled_at ? `<s>${rp(m.amount)}</s>` : rp(m.amount)}${m.tanpa_tujuan ? `<br><span class="badge warn">tanpa tujuan</span>` : ""}</td><td>${badge(m.state)} ${badge(m.approval_state)}</td></tr>`).join(""), "Belum ada")}
     </div>
+    ${d.refund_requests?.length ? `<div class="panel"><h2>Pengajuan uang kembali <span class="hint">diajukan operasional, dikonfirmasi finance setelah uangnya masuk</span></h2>
+      <div id="jobRefundReq">${refundRequestTable(d.refund_requests, false)}</div></div>` : ""}
     <div class="panel"><h2>Jurnal kas job ini <span class="hint">uang benar-benar masuk / keluar</span></h2>${ledgerTable(d.ledger, false)}</div>
     <div class="panel"><h2>Riwayat perubahan</h2>
       ${table("<th>Waktu</th><th>Aksi</th><th>Oleh</th><th>Detail</th>",
@@ -599,7 +601,8 @@ export async function renderJobDetail(id) {
   on("reopenJob", action(() => api("POST", `/jobs/${id}/state`, { state: "confirmed" }), "Job dibuka lagi"));
   on("cancelJob", () => askReason("Batalkan job", "Hanya bisa kalau belum ada invoice / pengajuan aktif. Uang yang sudah dibayar ke vendor dicatat dulu lewat \"Uang kembali dari vendor\".",
     (reason) => api("POST", `/jobs/${id}/state`, { state: "cancelled", reason }), "Batalkan job"));
-  on("vendorRefund", () => vendorRefundForm(j));
+  on("vendorRefund", () => (canFinance() ? vendorRefundForm(j) : vendorRefundRequestForm(j)));
+  bindRefundRequests(document.getElementById("jobRefundReq"));
   on("gateOut", () => gateModal(id, "gate_out_at", "Gate out", reload));
   on("gateIn", () => gateModal(id, "gate_in_at", "Gate in", reload));
   on("pos", () => positionModal(id, reload));
@@ -726,4 +729,92 @@ async function vendorRefundForm(j) {
       window.dispatchEvent(new Event("hashchange"));
     },
   });
+}
+
+// ---------------------------------------------------------------- pengajuan uang kembali (OPERATIONAL -> FINANCE)
+const REFUND_AFTER = {
+  CANCEL_JOB: "Trip tidak jadi jalan: batalkan job",
+  REDUCE_COST: "Hanya terpakai sebagian: cost job dikurangi sebesar uang kembali",
+  KEEP_COST: "Cost tetap: nanti diajukan & dibayar lagi (mis. ganti driver / trip ditunda)",
+};
+const REFUND_STATE = { PENDING: ["Menunggu konfirmasi", "draft"], CONFIRMED: ["Dikonfirmasi", "posted"], REJECTED: ["Ditolak", "cancelled"], CANCELLED: ["Ditarik", "cancelled"] };
+
+// OPERATIONAL mengajukan: tanpa rekening & tanggal (itu diisi finance saat uangnya sudah masuk)
+async function vendorRefundRequestForm(j) {
+  const rows = (await get(`/jobs/${j.id}/vendor-refund`)).filter((r) => r.bisa > 0.004);
+  if (!rows.length) return toast("Tidak ada pembayaran vendor job ini yang bisa dikembalikan", true);
+  openModal({
+    title: `Ajukan uang kembali · ${j.job_number}`,
+    submitLabel: "Ajukan ke finance",
+    body: `
+      <label>Pembayaran yang uangnya kembali<select name="move_line_id">${rows.map((r) => `<option value="${r.move_line_id}">${esc(r.number)} · ${esc(PHASE_LABEL[r.phase] || r.phase)} · ${esc(r.pihak || "-")} · dibayar ${rp(r.dibayar)}${r.dikembalikan ? `, sudah kembali ${rp(r.dikembalikan)}` : ""}</option>`).join("")}</select></label>
+      <div class="form-grid">
+        <label>Nominal kembali<input class="num" name="amount" required></label>
+        <label class="wide">Alasan<input name="reason" required placeholder="mis. trip tidak jadi jalan, uang jalan dikembalikan driver"></label>
+      </div>
+      <h4>Sesudah uang kembali</h4>
+      <div class="radio-list">${Object.entries(REFUND_AFTER).map(([k, l], i) => `<label class="radio"><input type="radio" name="after" value="${k}" ${i === 0 ? "checked" : ""}> ${esc(l)}</label>`).join("")}</div>
+      <div class="note-box">Finance mengonfirmasi setelah uangnya benar-benar masuk (rekening &amp; tanggal diisi finance). Sebelum dikonfirmasi, pengajuan
+        bisa Anda tarik lagi.</div>`,
+    onOpen: (form) => {
+      const E = form.elements;
+      const fill = () => { E.amount.value = rp(rows.find((x) => String(x.move_line_id) === E.move_line_id.value).bisa); };
+      E.move_line_id.onchange = fill;
+      fill();
+    },
+    onSubmit: async (d) => {
+      d.amount = num(d.amount);
+      await api("POST", `/jobs/${j.id}/vendor-refund-requests`, d);
+      toast("Pengajuan uang kembali dikirim ke finance");
+      window.dispatchEvent(new Event("hashchange"));
+    },
+  });
+}
+
+// Tabel pengajuan uang kembali (halaman job & halaman Pengajuan Vendor) + tombol sesuai hak
+export function refundRequestTable(rows, withJob = true) {
+  return table(`${withJob ? "<th>Job</th>" : ""}<th>Pengajuan</th><th>Penerima</th><th class="num">Nominal</th><th>Sesudahnya</th><th>Alasan</th><th>Diajukan</th><th>Status</th><th></th>`,
+    rows.map((r) => `<tr>${withJob ? `<td><a href="#/jobs/${r.job_id}"><b>${esc(r.job_number)}</b></a></td>` : ""}
+      <td>${esc(r.pengajuan)}</td><td>${esc(r.pihak || "-")}</td><td class="num">${rp(r.amount)}</td>
+      <td class="small-text">${esc(REFUND_AFTER[r.after] || r.after)}</td><td class="small-text">${esc(r.reason)}</td>
+      <td class="nowrap">${esc(r.requested_by_name || "")}<br><span class="muted">${jam(r.requested_at)}</span></td>
+      <td><span class="badge ${REFUND_STATE[r.state][1]}">${REFUND_STATE[r.state][0]}</span>${r.credit_note ? `<br><a href="#/moves/${r.credit_note_id}">${esc(r.credit_note)}</a>` : ""}
+        ${r.decision_note ? `<br><span class="muted small-text">${esc(r.decision_note)}</span>` : ""}${r.decided_by_name && r.state !== "PENDING" ? `<br><span class="muted small-text">${esc(r.decided_by_name)}</span>` : ""}</td>
+      <td class="nowrap">${r.state !== "PENDING" ? "" : `${canFinance() ? `<button type="button" class="small primary" data-rr-confirm="${r.id}">Konfirmasi</button>
+          <button type="button" class="small danger" data-rr-reject="${r.id}">Tolak</button>` : ""}
+        ${r.requested_by === state.user.id || canFinance() ? `<button type="button" class="small" data-rr-cancel="${r.id}">Tarik</button>` : ""}`}</td></tr>`).join(""),
+    "Belum ada pengajuan");
+}
+
+export function bindRefundRequests(box) {
+  if (!box) return;
+  const reload = () => window.dispatchEvent(new Event("hashchange"));
+  const find = async (id) => (await get(`/vendor-refund-requests`)).find((x) => String(x.id) === String(id));
+  box.querySelectorAll("[data-rr-confirm]").forEach((b) => (b.onclick = async () => {
+    const r = await find(b.dataset.rrConfirm);
+    const banks = state.cache.banks.filter((x) => x.active);
+    openModal({
+      title: `Konfirmasi uang kembali · ${r.job_number}`,
+      submitLabel: "Uang sudah masuk, catat",
+      body: `<div class="note-box">${esc(r.requested_by_name || "")} mengajukan uang kembali <b>${rp(r.amount)}</b> dari ${esc(r.pihak || "-")} (${esc(r.pengajuan)}).
+          Alasan: ${esc(r.reason)}.</div>
+        <div class="form-grid">
+          <label>Nominal yang benar-benar masuk<input class="num" name="amount" value="${rp(r.amount)}" required></label>
+          <label>Tanggal uang masuk<input type="date" name="date" value="${today()}" max="${today()}"></label>
+          <label>Masuk ke rekening<select name="bank_account_id">${options(banks, banks.find((x) => x.is_default)?.id, (x) => `${x.name}${x.kind === "OPERATIONAL" ? " (kas operasional)" : ""}`, "- pilih -")}</select></label>
+          <label class="wide">Catatan finance (opsional)<input name="note"></label>
+        </div>
+        <h4>Sesudah uang kembali</h4>
+        <div class="radio-list">${Object.entries(REFUND_AFTER).map(([k, l]) => `<label class="radio"><input type="radio" name="after" value="${k}" ${k === r.after ? "checked" : ""}> ${esc(l)}</label>`).join("")}</div>`,
+      onSubmit: async (d) => {
+        d.amount = num(d.amount);
+        const x = await api("POST", `/vendor-refund-requests/${r.id}/confirm`, d);
+        toast(`Uang kembali dicatat: ${x.credit_note}, ${x.payment}`);
+        reload();
+      },
+    });
+  }));
+  box.querySelectorAll("[data-rr-reject]").forEach((b) => (b.onclick = () => askReason("Tolak pengajuan uang kembali", "Mis. uangnya belum / tidak masuk. Operasional bisa mengajukan lagi.",
+    (reason) => api("POST", `/vendor-refund-requests/${b.dataset.rrReject}/reject`, { reason }), "Tolak")));
+  box.querySelectorAll("[data-rr-cancel]").forEach((b) => (b.onclick = action(() => api("POST", `/vendor-refund-requests/${b.dataset.rrCancel}/cancel`, {}), "Pengajuan ditarik")));
 }
