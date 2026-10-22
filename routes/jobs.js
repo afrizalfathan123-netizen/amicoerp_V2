@@ -35,10 +35,10 @@ async function jobVersion(t, id) {
 
 // Kode tugas (DO) unik: satu kode tugas = satu job. One way tetap satu kode tugas walau bongkar / muat di banyak tempat;
 // round trip cukup kode tugas pergi (balikan tidak diinput). Isian kosong / diawali "TIDAK" ("TIDAK ADA KODE TUGAS",
-// "TIDAK JADI JALAN") / "-" / "xxx" tidak dihitung,
+// "TIDAK JADI JALAN"), "CANCEL" / "BATAL" (trip batal) / "-" / "xxx" tidak dihitung,
 // dan job batal tidak dihitung (kodenya boleh dipakai job pengganti). Huruf besar / kecil dan spasi diabaikan.
 export const normDo = (v) => String(v || "").replace(/\s/g, "").toUpperCase();
-export const isPlaceholderDo = (v) => { const s = String(v || "").trim(); return !s || /^(TIDAK\b|-+$|X+$)/i.test(s); };
+export const isPlaceholderDo = (v) => { const s = String(v || "").trim(); return !s || /^(TIDAK\b|CANCEL|BATAL|-+$|X+$)/i.test(s); };
 const DO_KEY = "upper(regexp_replace(coalesce(j.do_number, ''), '\\s', '', 'g'))";
 async function assertUniqueDo(t, doNumber, jobId = 0) {
   if (isPlaceholderDo(doNumber)) return;
@@ -268,14 +268,14 @@ export default function jobRoutes(db) {
   r.get("/jobs/duplicate-do", requireRole(ROLES.READ), route(async () => {
     const rows = await db.query(
       `select ${DO_KEY} as kode_tugas, json_agg(json_build_object('id', j.id, 'job_number', j.job_number, 'job_date', j.job_date) order by j.job_number) as jobs
-       from job j where j.state <> 'cancelled' and coalesce(j.do_number, '') !~* '^\\s*(tidak\\y|-+\\s*$|x+\\s*$|$)'
+       from job j where j.state <> 'cancelled' and coalesce(j.do_number, '') !~* '^\\s*(tidak\\y|cancel|batal|-+\\s*$|x+\\s*$|$)'
        group by 1 having count(*) > 1 order by 1`);
     return rows;
   }));
 
   // Halaman "Sisihkan": job yang perlu dibetulkan dulu.
   //   dobel     = kode tugas dipakai lebih dari satu job aktif (satu kode tugas hanya untuk satu job)
-  //   tidak_jalan = job aktif yang kode tugasnya berisi "TIDAK JADI ..." (trip batal, seharusnya job dibatalkan)
+  //   tidak_jalan = job aktif yang kode tugasnya berisi "TIDAK JADI ..." / "CANCEL" / "BATAL" (trip batal, seharusnya job dibatalkan)
   r.get("/jobs/sisihkan", requireRole(ROLES.READ), route(async () => {
     const cols = `j.id, j.job_number, j.job_date, j.do_number, j.state, c.name as customer, lp.code as pol, ld.code as pod, j.trip_type,
                   j.delivery_scope, j.plate_number, j.driver1_name, j.gate_out_at, j.gate_in_at,
@@ -283,13 +283,13 @@ export default function jobRoutes(db) {
                     where ml.job_id = j.id and m.state <> 'cancelled' and ml.cancelled_at is null) as dokumen`;
     const joins = `join res_partner c on c.id = j.customer_id join location lp on lp.id = j.pol_id join location ld on ld.id = j.pod_id`;
     const dobel = await db.query(
-      `with d as (select ${DO_KEY} as kode, j.id from job j where j.state <> 'cancelled' and coalesce(j.do_number, '') !~* '^\\s*(tidak\\y|-+\\s*$|x+\\s*$|$)'),
+      `with d as (select ${DO_KEY} as kode, j.id from job j where j.state <> 'cancelled' and coalesce(j.do_number, '') !~* '^\\s*(tidak\\y|cancel|batal|-+\\s*$|x+\\s*$|$)'),
             k as (select kode from d group by kode having count(*) > 1)
        select d.kode as kode_tugas, ${cols} from d join k using (kode) join job j on j.id = d.id ${joins}
        order by d.kode, j.job_number`);
     const tidakJalan = await db.query(
       `select ${cols} from job j ${joins}
-       where j.state <> 'cancelled' and coalesce(j.do_number, '') ~* 'tidak\\s*jadi' order by j.job_number`);
+       where j.state <> 'cancelled' and coalesce(j.do_number, '') ~* '(tidak\\s*jadi|^\\s*(cancel|batal))' order by j.job_number`);
     return { dobel, tidak_jalan: tidakJalan };
   }));
 

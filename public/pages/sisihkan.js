@@ -32,7 +32,7 @@ export async function renderSisihkan() {
         <div class="table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${jobs.map((j) => `<tr>${info(j)}${aksi(j)}</tr>`).join("")}</tbody></table></div>`).join("")
         : `<p class="empty">Tidak ada kode tugas yang dobel.</p>`}
     </div>
-    <div class="panel"><h2>Trip "tidak jadi jalan" yang masih aktif <span class="hint">kode tugasnya berisi "TIDAK JADI ..."; batalkan job-nya supaya tidak ikut dihitung</span></h2>
+    <div class="panel"><h2>Trip "tidak jadi jalan" yang masih aktif <span class="hint">kode tugasnya berisi "TIDAK JADI ...", "CANCEL", atau "BATAL"; batalkan job-nya supaya tidak ikut dihitung</span></h2>
       ${s.tidak_jalan.length ? `<div class="table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${s.tidak_jalan.map((j) => `<tr>${info(j)}${aksi(j)}</tr>`).join("")}</tbody></table></div>`
         : `<p class="empty">Tidak ada.</p>`}
     </div>`;

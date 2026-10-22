@@ -318,6 +318,9 @@ try {
     // isian "tidak ada" / kosong boleh berulang
     await ops.call("POST", "/jobs", { ...base, do_number: "TIDAK ADA KODE TUGAS" });
     await ops.call("POST", "/jobs", { ...base, do_number: "TIDAK ADA KODE TUGAS" });
+    // "CANCEL" / "BATAL" = tanda trip batal, bukan kode tugas: boleh berulang, muncul di Sisihkan > trip tidak jadi jalan
+    const cx = await ops.call("POST", "/jobs", { ...base, do_number: "CANCEL" });
+    await ops.call("POST", "/jobs", { ...base, do_number: "cancel" });
     await ops.call("POST", "/jobs", { ...base, do_number: "TIDAK JADI JALAN" });
     await ops.call("POST", "/jobs", { ...base, do_number: "tidak jadi jalan" });
     const B = await ops.call("POST", "/jobs", { ...base });
@@ -337,6 +340,9 @@ try {
     const sis = await viewer.call("GET", "/jobs/sisihkan");
     assert.deepEqual(sis.dobel.filter((x) => x.kode_tugas === "KTU-0001").map((x) => x.id).sort(), [A.id, B.id].sort());
     assert.equal(sis.tidak_jalan.filter((x) => /tidak jadi jalan/i.test(x.do_number)).length, 2);
+    assert.equal(sis.tidak_jalan.filter((x) => /^cancel$/i.test(x.do_number)).length, 2);
+    assert.ok(!sis.dobel.some((x) => x.kode_tugas === "CANCEL"));
+    await ops.call("POST", `/jobs/${cx.id}/state`, { state: "cancelled", reason: "trip batal" });
     assert.deepEqual(dup.jobs.map((x) => x.id).sort(), [A.id, B.id].sort());
     v = (await ops.call("GET", `/jobs/${A.id}`)).job.version;
     await ops.call("PUT", `/jobs/${A.id}`, { note: "edit lain tetap bisa", expected_version: v });
