@@ -14,6 +14,13 @@ import { batchJobForm } from "./jobs-batch.js";
 
 const SCOPE = { INTERCITY: "Antar kota", INNERCITY: "Dalam kota" };
 const TRIP = { ONE_WAY: "One way", ROUND_TRIP: "PP / round trip" };
+// ekspor / impor (FF)
+const FF_DIR = { EXPORT: "Ekspor", IMPORT: "Impor" };
+const FF_MODE = { SEA: "Laut", AIR: "Udara" };
+const FF_LOAD = { FCL: "FCL (kontainer penuh)", LCL: "LCL (gabungan)", UDARA: "Udara" };
+const CONT_SIZES = { 20: "20'", 40: "40'", "40HC": "40' HC", 45: "45'" };
+const isFF = (j) => j?.service_type === "FORWARDING";
+const ffLabel = (j) => (isFF(j) ? `${FF_DIR[j.ff_direction || j.shipment?.direction] || "Ekspor / impor"}${(j.ff_mode || j.shipment?.mode) ? ` ${FF_MODE[j.ff_mode || j.shipment?.mode].toLowerCase()}` : ""}` : "");
 
 function shortBadge(j) {
   const parts = [];
@@ -61,7 +68,7 @@ const gateCell = (j, field) => {
 };
 const stageCell = (j) => `${stageBadge(j.stage)}${j.sj_late ? `<br><span class="badge warn" title="${esc(SJ_LATE_LABEL[j.sj_late])}">SJ terlambat</span>` : ""}${shortBadge(j)}`;
 const jobRow = (j) => `<tr class="click" data-href="#/jobs/${j.id}" data-job="${j.id}">
-  <td><b>${esc(j.job_number)}</b></td><td>${esc(j.do_number || "")}</td><td class="nowrap">${tgl(j.job_date)}</td>${gateCell(j, "gate_out_at")}${gateCell(j, "gate_in_at")}<td>${esc(j.customer)}</td>
+  <td><b>${esc(j.job_number)}</b>${isFF(j) ? `<br><span class="badge ff" title="${esc([j.ff_vessel, j.ff_etd ? `ETD ${tgl(j.ff_etd)}` : "", j.ff_containers ? `${j.ff_containers} kontainer` : ""].filter(Boolean).join(" · "))}">${esc(ffLabel(j))}</span>` : ""}</td><td>${esc(j.do_number || "")}</td><td class="nowrap">${tgl(j.job_date)}</td>${gateCell(j, "gate_out_at")}${gateCell(j, "gate_in_at")}<td>${esc(j.customer)}</td>
   <td>${esc(routeOf(j))}${j.delivery_scope === "INNERCITY" ? `<br><span class="muted">dalam kota${j.rit_number ? ` rit ${j.rit_number}` : ""}</span>` : ""}</td>
   <td>${esc(j.truck_type)}</td><td class="nowrap">${esc(j.plate_number || "")}</td><td>${esc(j.driver1_name || "")}</td>
   <td>${SCHEME_SHORT[j.customer_scheme]}${j.vendor_scheme !== j.customer_scheme ? `<br><span class="muted">vendor ${SCHEME_SHORT[j.vendor_scheme]}</span>` : ""}</td>
@@ -88,6 +95,7 @@ export async function renderJobs() {
         <label>Status<select id="jStage"><option value="">Semua</option>${enumOptions(STAGE_LABEL, f.stage)}</select></label>
         <label>Lainnya<select id="jState"><option value="">-</option>${enumOptions({ kurang_transfer: "Kurang transfer", cancelled: "Dibatalkan" }, f.state)}</select></label>
         <label>Lingkup<select id="jScope"><option value="">Semua</option>${enumOptions(SCOPE, f.scope)}</select></label>
+        <label>Jenis<select id="jService"><option value="">Semua</option>${enumOptions({ TRUCKING: "Domestik", FF: "Ekspor / impor (FF)" }, f.service)}</select></label>
         <label>Dari<input type="date" id="jFrom" value="${esc(f.from || "")}"></label>
         <label>Sampai<input type="date" id="jTo" value="${esc(f.to || "")}"></label>
         <button id="jPaste" title="Tempel daftar no job / kode tugas dari Excel atau WhatsApp">Tempel daftar</button>
@@ -99,7 +107,7 @@ export async function renderJobs() {
   document.getElementById("newJob")?.addEventListener("click", () => jobForm());
   document.getElementById("batchJob")?.addEventListener("click", () => batchJobForm());
   const el = (id) => document.getElementById(id);
-  const topIds = ["jSearch", "jStage", "jState", "jScope", "jFrom", "jTo"];
+  const topIds = ["jSearch", "jStage", "jState", "jScope", "jService", "jFrom", "jTo"];
   // urutan bawaan: sesuai urutan tempelan kalau sedang memakai daftar tempel
   const pos = () => new Map((paste?.numbers || []).map((n, i) => [n, i]));
   let posMap = pos();
@@ -221,10 +229,10 @@ export async function renderJobs() {
   }
   el("jPaste").onclick = pasteModal;
   el("jSearch").oninput = debounce(load);
-  for (const k of ["jStage", "jState", "jScope", "jFrom", "jTo"]) el(k).onchange = load;
+  for (const k of ["jStage", "jState", "jScope", "jService", "jFrom", "jTo"]) el(k).onchange = load;
   el("exportJobs").onclick = async () => {
     // ada filter kolom / daftar tempel -> export persis yang tampil; selain itu pakai filter tanggal & status
-    if (paste || grid.active() || el("jSearch").value || el("jState").value || el("jScope").value) {
+    if (paste || grid.active() || el("jSearch").value || el("jState").value || el("jScope").value || el("jService").value) {
       const ids = grid.visible().map((j) => j.id);
       if (!ids.length) return toast("Tidak ada job yang tampil", true);
       try {
@@ -321,6 +329,11 @@ export function jobForm(job = null, balance = null) {
     title: job ? `Edit ${job.job_number}` : "Job baru",
     wide: true,
     body: `
+      ${job ? `<div class="note-box">Jenis job: <b>${isFF(job) ? `Ekspor / impor (FF)` : "Domestik"}</b>. Jenis job melekat di nomornya dan tidak bisa diganti.</div>`
+        : `<div class="seg-choice" role="radiogroup" aria-label="Jenis job">
+        <label class="radio"><input type="radio" name="service_type" value="TRUCKING" checked> <b>Domestik</b> <span class="muted">trucking dalam negeri, nomor AMC/YYMM/NNNN</span></label>
+        <label class="radio"><input type="radio" name="service_type" value="FORWARDING"> <b>Ekspor / impor</b> <span class="muted">freight forwarding, nomor berakhiran FF</span></label>
+      </div>`}
       ${job ? "" : `<div class="wa-paste">
         <div class="wa-head"><b>Tempel dari WhatsApp</b>
           <span class="muted">Tempel teks unit dari chat (Tanggal, Rute, Nama / Driver, Nopol, No HP, Kode Tugas): form langsung terisi. Customer, rekening, dan harga tetap Anda isi.</span></div>
@@ -337,6 +350,41 @@ export function jobForm(job = null, balance = null) {
         <label>POD<select name="pod_id" required>${options(c.locations.filter((l) => l.active), j.pod_id, locLabel, "- pilih -")}</select></label>
         <label>Trip<select name="trip_type">${enumOptions(TRIP, j.trip_type)}</select></label>
         <label>DO / kode tugas<input name="do_number" value="${esc(j.do_number || "")}"></label>
+      </div>
+      <div id="ffBox" ${isFF(j) ? "" : "hidden"}>
+        <h4>Data pengiriman (ekspor / impor)</h4>
+        <div class="form-grid">
+          <label>Arah<select name="sh_direction">${enumOptions(FF_DIR, j.shipment?.direction || "EXPORT")}</select></label>
+          <label>Moda<select name="sh_mode">${enumOptions(FF_MODE, j.shipment?.mode || "SEA")}</select></label>
+          <label>Shipper<input name="sh_shipper" value="${esc(j.shipment?.shipper || "")}"></label>
+          <label>Consignee<input name="sh_consignee" value="${esc(j.shipment?.consignee || "")}"></label>
+          <label>Notify party<input name="sh_notify_party" value="${esc(j.shipment?.notify_party || "")}"></label>
+          <label>Komoditas<input name="sh_commodity" value="${esc(j.shipment?.commodity || "")}"></label>
+          <label>Jumlah koli<input class="num" name="sh_packages" value="${j.shipment?.packages ?? ""}"></label>
+          <label>Satuan koli<input name="sh_package_unit" list="pkgUnits" value="${esc(j.shipment?.package_unit || "")}" placeholder="CTN / PLT / PKG"></label>
+          <label>Berat kotor (KGM)<input class="num" name="sh_gross_weight" value="${j.shipment?.gross_weight ?? ""}"></label>
+          <label>Volume (M3)<input class="num" name="sh_volume" value="${j.shipment?.volume ?? ""}"></label>
+          <label>Pelayaran / maskapai<input name="sh_carrier" value="${esc(j.shipment?.carrier || "")}"></label>
+          <label>Kapal / no. penerbangan<input name="sh_vessel" value="${esc(j.shipment?.vessel || "")}"></label>
+          <label>Voyage<input name="sh_voyage" value="${esc(j.shipment?.voyage || "")}"></label>
+          <label>ETD<input type="date" name="sh_etd" value="${tgl(j.shipment?.etd)}"></label>
+          <label>ETA<input type="date" name="sh_eta" value="${tgl(j.shipment?.eta)}"></label>
+          <label>Incoterm<input name="sh_incoterm" list="incoterms" value="${esc(j.shipment?.incoterm || "")}" placeholder="FOB / CIF / EXW"></label>
+          <label>Master B/L / MAWB<input name="sh_mbl_number" value="${esc(j.shipment?.mbl_number || "")}"></label>
+          <label>House B/L / HAWB<input name="sh_hbl_number" value="${esc(j.shipment?.hbl_number || "")}"></label>
+          <label>No. aju / PO<input name="sh_aju_number" value="${esc(j.shipment?.aju_number || "")}"></label>
+          <label>PEB / PIB<input name="sh_customs_number" value="${esc(j.shipment?.customs_number || "")}"></label>
+          <label class="wide">Catatan pengiriman<input name="sh_note" value="${esc(j.shipment?.note || "")}"></label>
+        </div>
+        <h4>Kontainer <span class="muted small-text">kosongkan kalau LCL / udara; nomor kontainer boleh diisi belakangan</span></h4>
+        <div id="contRows"></div>
+        <div class="cont-add"><button type="button" class="small" id="contAdd">+ Kontainer</button>
+          <span class="muted small-text">tambah cepat:</span>
+          <input type="number" min="1" max="50" id="contQty" value="1" aria-label="Jumlah kontainer"> x
+          <select id="contQtySize" aria-label="Ukuran">${Object.entries(CONT_SIZES).map(([k, v]) => `<option value="${k}">${v}</option>`).join("")}</select>
+          <button type="button" class="small" id="contAddMany">Tambah</button></div>
+        <datalist id="pkgUnits">${["CTN", "PLT", "PKG", "BAG", "DRM", "PCS", "CASE"].map((x) => `<option value="${x}">`).join("")}</datalist>
+        <datalist id="incoterms">${["EXW", "FCA", "FOB", "CFR", "CIF", "DAP", "DDP"].map((x) => `<option value="${x}">`).join("")}</datalist>
       </div>
       <h4>Unit & driver</h4>
       <div class="form-grid">
@@ -375,6 +423,40 @@ export function jobForm(job = null, balance = null) {
     onOpen: (form) => {
       let price = null;
       const E = form.elements;
+      // ---- ekspor / impor: bagian data pengiriman + kontainer; muatan FCL / LCL / udara di kolom jenis truk
+      const ffNow = () => (job ? isFF(job) : form.querySelector('[name="service_type"]:checked')?.value === "FORWARDING");
+      const truckLabel = E.truck_type.closest("label");
+      const applyFF = () => {
+        const on = ffNow();
+        form.querySelector("#ffBox").hidden = !on;
+        // lingkup & rit hanya untuk trucking domestik
+        for (const n of ["delivery_scope", "rit_number"]) E[n].closest("label").hidden = on;
+        form.querySelector(".wa-paste")?.toggleAttribute("hidden", on);
+        truckLabel.firstChild.textContent = on ? "Muatan (FCL / LCL / UDARA)" : "Jenis truk";
+        E.truck_type.setAttribute("list", on ? "ffLoads" : "truckTypes");
+        if (on && !job && !["FCL", "LCL", "UDARA"].includes(E.truck_type.value)) E.truck_type.value = E.sh_mode.value === "AIR" ? "UDARA" : "FCL";
+        if (!on && !job && ["FCL", "LCL", "UDARA"].includes(E.truck_type.value)) E.truck_type.value = "CDDL";
+      };
+      form.insertAdjacentHTML("beforeend", `<datalist id="ffLoads">${Object.keys(FF_LOAD).map((k) => `<option value="${k}">${FF_LOAD[k]}</option>`).join("")}</datalist>`);
+      form.querySelectorAll('[name="service_type"]').forEach((r) => (r.onchange = () => { applyFF(); lookup(); }));
+      E.sh_mode.addEventListener("change", () => { if (E.sh_mode.value === "AIR") E.truck_type.value = "UDARA"; else if (E.truck_type.value === "UDARA") E.truck_type.value = "FCL"; lookup(); });
+      const contBox = form.querySelector("#contRows");
+      const contRow = (c = {}) => {
+        const div = document.createElement("div");
+        div.className = "cont-row";
+        div.innerHTML = `<input data-c="container_number" placeholder="No. kontainer (mis. TCLU1234567)" value="${esc(c.container_number || "")}" aria-label="Nomor kontainer">
+          <select data-c="size" aria-label="Ukuran">${Object.entries(CONT_SIZES).map(([k, v]) => `<option value="${k}" ${String(c.size) === k ? "selected" : ""}>${v}</option>`).join("")}</select>
+          <input data-c="seal_number" placeholder="No. segel" value="${esc(c.seal_number || "")}" aria-label="Nomor segel">
+          <button type="button" class="small danger" aria-label="Hapus kontainer">Hapus</button>`;
+        div.querySelector("button").onclick = () => div.remove();
+        contBox.appendChild(div);
+      };
+      (job?.containers || []).forEach(contRow);
+      form.querySelector("#contAdd").onclick = () => contRow({ size: "40HC" });
+      form.querySelector("#contAddMany").onclick = () => {
+        const n = Math.min(50, Math.max(1, Number(form.querySelector("#contQty").value) || 1));
+        for (let i = 0; i < n; i++) contRow({ size: form.querySelector("#contQtySize").value });
+      };
       const fillBanks = () => {
         const banks = partnerBanksOf(E.vendor_id.value);
         E.vendor_bank_id.innerHTML = options(banks, purchase?.partner_bank_id || banks.find((b) => b.is_default)?.id, (b) => `${b.bank_name} ${b.account_number} a.n. ${b.holder}`, banks.length ? "- pilih -" : "- belum ada rekening -");
@@ -427,6 +509,7 @@ export function jobForm(job = null, balance = null) {
         if (box) { box.hidden = !moved; E.reason.required = moved; }
       });
       fillBanks();
+      applyFF();
       lookup();
 
       // tempel teks WhatsApp -> isi form (hanya job baru). Yang tidak cocok dengan master tidak diisi, hanya diberi catatan.
@@ -464,8 +547,18 @@ export function jobForm(job = null, balance = null) {
         wa.addEventListener("paste", () => setTimeout(applyWa, 0));   // tempel = langsung terisi
       }
     },
-    onSubmit: async (d) => {
+    onSubmit: async (d, form) => {
       for (const k of ["selling", "cost", "selling_after_tax"]) d[k] = num(d[k]);
+      // data pengiriman (sh_*) & kontainer hanya untuk job ekspor / impor
+      const shipment = {};
+      for (const k of Object.keys(d).filter((x) => x.startsWith("sh_"))) { shipment[k.slice(3)] = d[k]; delete d[k]; }
+      const ff = job ? isFF(job) : d.service_type === "FORWARDING";
+      if (ff) {
+        for (const k of ["packages", "gross_weight", "volume"]) shipment[k] = num(shipment[k]);
+        d.shipment = shipment;
+        d.containers = [...form.querySelectorAll("#contRows .cont-row")].map((r) => Object.fromEntries([...r.querySelectorAll("[data-c]")].map((x) => [x.dataset.c, x.value.trim()])));
+      }
+      if (job) delete d.service_type;
       if (lockCust) { delete d.customer_id; delete d.customer_scheme; }
       if (lockVend) delete d.vendor_scheme;
       // cost dikosongkan saat ganti rute = ambil dari price book rute baru
@@ -532,6 +625,19 @@ export async function renderJobDetail(id) {
         ${kv("Selling setelah pajak", j.selling_after_tax != null ? `${rp(j.selling_after_tax)} (manual)` : "Dihitung dari pajak customer")}
         ${kv("Catatan", j.note)}
       </div></div>
+      ${isFF(j) ? `<div class="panel wide-panel"><h2>Ekspor / impor <span class="badge ff">FF</span> <span class="hint">${esc(ffLabel({ ...j, shipment: d.shipment }))}${d.shipment ? ` · ${esc(j.truck_type)}` : ""}</span></h2>
+        ${d.shipment ? `<div class="kv">
+          ${kv("Shipper", d.shipment.shipper)}${kv("Consignee", d.shipment.consignee)}${kv("Notify party", d.shipment.notify_party)}
+          ${kv("Komoditas", d.shipment.commodity)}${kv("Koli", d.shipment.packages != null ? `${Number(d.shipment.packages).toLocaleString("id-ID")} ${d.shipment.package_unit || ""}` : "")}
+          ${kv("Berat / volume", [d.shipment.gross_weight != null ? `${Number(d.shipment.gross_weight).toLocaleString("id-ID")} KGM` : "", d.shipment.volume != null ? `${Number(d.shipment.volume).toLocaleString("id-ID")} M3` : ""].filter(Boolean).join(" / "))}
+          ${kv("Asal - tujuan", `${j.pol_name} - ${j.pod_name}`)}${kv("Pelayaran / maskapai", d.shipment.carrier)}
+          ${kv("Kapal / voyage", [d.shipment.vessel, d.shipment.voyage].filter(Boolean).join(" / "))}${kv("ETD / ETA", [tgl(d.shipment.etd), tgl(d.shipment.eta)].filter(Boolean).join(" / "))}
+          ${kv("Master B/L / MAWB", d.shipment.mbl_number)}${kv("House B/L / HAWB", d.shipment.hbl_number)}
+          ${kv("No. aju / PO", d.shipment.aju_number)}${kv("PEB / PIB", d.shipment.customs_number)}${kv("Incoterm", d.shipment.incoterm)}${kv("Catatan", d.shipment.note)}</div>`
+          : `<p class="muted">Data pengiriman belum diisi (job dari impor Excel). Klik Edit untuk mengisinya.</p>`}
+        ${d.containers.length ? `<h4>Kontainer (${d.containers.length})</h4>${table("<th>#</th><th>No. kontainer</th><th>Ukuran</th><th>Segel</th>",
+          d.containers.map((c, i) => `<tr><td>${i + 1}</td><td class="mono">${esc(c.container_number || "(belum ada)")}</td><td>${esc(CONT_SIZES[c.size] || c.size)}</td><td>${esc(c.seal_number || "")}</td></tr>`).join(""))}` : ""}
+      </div>` : ""}
       ${d.unit ? `<div class="panel wide-panel"><h2>Unit sewa ${esc(d.unit.plate_number)} <span class="hint">sewa dibagi per hari trip (gate out s/d gate in)</span>
           <span class="spacer"></span><a class="btn small" href="#/units" onclick="sessionStorage.setItem('units', JSON.stringify({ tab: 'profit', month: '${String(d.unit.day_from).slice(0, 7)}', unit: '${d.unit.vehicle_id}' }))">Lihat unit</a></h2>
         <div class="kv">${kv("Hari trip", `${d.unit.days} hari (${tgl(d.unit.day_from)} s/d ${tgl(d.unit.day_to)})${d.unit.masih_jalan ? ", masih jalan" : ""}${d.unit.tanpa_gate ? ", tanpa gate: pakai tanggal job" : ""}`)}
@@ -596,7 +702,7 @@ export async function renderJobDetail(id) {
   const reload = () => window.dispatchEvent(new Event("hashchange"));
   if (d.unassigned.length) unassignedTable(document.getElementById("unassignedBox"), d.unassigned, reload, { showJob: false });
   const on = (sel, fn) => document.getElementById(sel)?.addEventListener("click", fn);
-  on("editJob", () => jobForm({ ...j, lines: d.lines }, { ...b, invoiced: b.invoiced, requested: b.requested }));
+  on("editJob", () => jobForm({ ...j, lines: d.lines, shipment: d.shipment, containers: d.containers }, { ...b, invoiced: b.invoiced, requested: b.requested }));
   on("doneJob", action(() => api("POST", `/jobs/${id}/state`, { state: "done" }), "Job selesai"));
   on("reopenJob", action(() => api("POST", `/jobs/${id}/state`, { state: "confirmed" }), "Job dibuka lagi"));
   on("cancelJob", () => askReason("Batalkan job", "Hanya bisa kalau belum ada invoice / pengajuan aktif. Uang yang sudah dibayar ke vendor dicatat dulu lewat \"Uang kembali dari vendor\".",
@@ -624,12 +730,15 @@ export async function renderJobDetail(id) {
 }
 
 function lineForm(job, side, line = null) {
-  const kinds = side === "SALE" ? { TOL: "Tol", CALO: "Calo", PARKIR: "Parkir", BONGKAR: "Bongkar muat", LAINNYA: "Lainnya" }
+  // job ekspor / impor: biaya khas forwarding di depan (freight, THC, dokumen, bea cukai, storage, handling)
+  const FF_KINDS = { FREIGHT: "Freight (laut / udara)", THC: "THC", DOKUMEN: "Dokumen", BEA_CUKAI: "Bea cukai / PPJK", STORAGE: "Storage / demurrage", HANDLING: "Handling" };
+  const base = side === "SALE" ? { TOL: "Tol", CALO: "Calo", PARKIR: "Parkir", BONGKAR: "Bongkar muat", LAINNYA: "Lainnya" }
     : { CALO: "Calo", TOL: "Tol", PARKIR: "Parkir", BONGKAR: "Bongkar muat", LAINNYA: "Biaya lain" };
+  const kinds = isFF(job) ? { ...FF_KINDS, ...base } : base;
   openModal({
     title: line ? `Ubah ${KIND_LABEL[line.kind]}` : side === "SALE" ? "Tambah selling (ditagih ke customer)" : "Tambah biaya vendor (calo, tol, ...)",
     body: `<div class="form-grid">
-      ${line ? "" : `<label>Jenis<select name="kind">${enumOptions(kinds, "CALO")}</select></label>`}
+      ${line ? "" : `<label>Jenis<select name="kind">${enumOptions(kinds, isFF(job) ? "FREIGHT" : "CALO")}</select></label>`}
       ${side === "PURCHASE" ? `<label>Dibayar ke<select name="partner_id">${options(vendors(), line?.partner_id, undefined, "- pilih -")}</select></label>
         <label>Rekening<select name="partner_bank_id"></select></label>` : ""}
       <label>Nominal<input class="num" name="amount" value="${line?.amount ?? ""}" required></label>

@@ -5,7 +5,57 @@ import { requireRole, ROLES } from "../lib/auth.js";
 import { route, fail, money, rupiah, pick, insertRow, updateRow, nextNumber, audit, today } from "../lib/util.js";
 import { findPrice } from "./master.js";
 
-const KINDS = ["TRUCKING", "CALO", "TOL", "PARKIR", "BONGKAR", "LAINNYA"];
+const KINDS = ["TRUCKING", "CALO", "TOL", "PARKIR", "BONGKAR", "LAINNYA", "FREIGHT", "THC", "DOKUMEN", "BEA_CUKAI", "STORAGE", "HANDLING"];
+
+// ---------------------------------------------------------------- ekspor / impor (FF)
+// Job ekspor / impor = service_type FORWARDING, nomor = nomor urut job bulan itu + "FF" (urutan sama dengan domestik).
+const SHIPMENT_FIELDS = ["direction", "mode", "shipper", "consignee", "notify_party", "commodity", "packages", "package_unit",
+  "gross_weight", "volume", "carrier", "vessel", "voyage", "etd", "eta", "mbl_number", "hbl_number", "aju_number", "customs_number",
+  "incoterm", "note"];
+const SHIPMENT_NUM = ["packages", "gross_weight", "volume"];
+const SHIPMENT_DATE = ["etd", "eta"];
+const CONTAINER_SIZES = ["20", "40", "40HC", "45"];
+const isFF = (serviceType) => serviceType === "FORWARDING";
+
+// Simpan data pengiriman + daftar kontainer job FF. shipment / containers yang tidak dikirim = tidak diubah.
+async function saveShipment(t, jobId, b, { creating = false } = {}) {
+  if (b.shipment !== undefined || creating) {
+    const s = b.shipment || {};
+    if (!["EXPORT", "IMPORT"].includes(s.direction)) fail("Pilih ekspor atau impor");
+    if (!["SEA", "AIR"].includes(s.mode)) fail("Pilih moda: laut atau udara");
+    const row = { job_id: jobId };
+    for (const f of SHIPMENT_FIELDS) {
+      let v = s[f];
+      if (typeof v === "string") v = v.trim();
+      if (v === "" || v === undefined) v = null;
+      if (v != null && SHIPMENT_NUM.includes(f)) {
+        v = Number(v);     // tampilan sudah mengubah "1.234,5" jadi 1234.5
+        if (!Number.isFinite(v) || v < 0) fail(`Isian ${f} harus angka`);
+      }
+      if (v != null && SHIPMENT_DATE.includes(f) && !/^\d{4}-\d{2}-\d{2}$/.test(String(v))) fail(`Tanggal ${f.toUpperCase()} tidak terbaca`);
+      row[f] = v;
+    }
+    if (row.etd && row.eta && row.eta < row.etd) fail("ETA tidak boleh sebelum ETD");
+    const cols = Object.keys(row);
+    await t.query(
+      `insert into job_shipment (${cols.join(", ")}) values (${cols.map((_, i) => `$${i + 1}`).join(", ")})
+       on conflict (job_id) do update set ${cols.filter((c) => c !== "job_id").map((c) => `${c} = excluded.${c}`).join(", ")}`,
+      cols.map((c) => row[c]));
+  }
+  if (Array.isArray(b.containers)) {
+    const seen = new Set();
+    const rows = b.containers.filter((c) => c && (c.container_number || c.size || c.seal_number)).map((c) => {
+      const size = String(c.size || "").toUpperCase().replace(/[^0-9HC]/g, "");
+      if (!CONTAINER_SIZES.includes(size)) fail(`Ukuran kontainer ${c.size || "(kosong)"} tidak dikenal (20, 40, 40HC, 45)`);
+      const no = c.container_number ? String(c.container_number).toUpperCase().replace(/\s+/g, "") : null;
+      if (no && seen.has(no)) fail(`Kontainer ${no} ditulis dua kali`);
+      if (no) seen.add(no);
+      return { container_number: no, size, seal_number: c.seal_number ? String(c.seal_number).trim() : null, note: c.note ? String(c.note).trim() : null };
+    });
+    await t.query("delete from job_container where job_id = $1", [jobId]);
+    for (const c of rows) await insertRow(t, "job_container", { job_id: jobId, ...c });
+  }
+}
 const HEADER_FIELDS = ["job_date", "customer_id", "vendor_id", "pol_id", "pod_id", "trip_type", "service_type", "delivery_scope",
   "rit_number", "truck_type", "vehicle_id", "plate_number", "driver1_name", "driver1_phone", "driver2_name", "driver2_phone",
   "do_number", "customer_scheme", "vendor_scheme", "selling_after_tax", "note"];
@@ -182,6 +232,7 @@ async function listJobs(db, q) {
   if (q.to) add("j.job_date <= ?", q.to);
   if (q.customer_id) add("j.customer_id = ?", Number(q.customer_id));
   if (q.scope) add("j.delivery_scope = ?", q.scope);
+  if (q.service) add("j.service_type = ?", q.service === "FF" ? "FORWARDING" : q.service);
   // daftar nomor tempelan: no job atau kode tugas (DO), huruf besar / kecil & spasi diabaikan
   const numbers = parseNumbers(q.numbers);
   if (numbers.length) {
@@ -193,6 +244,8 @@ async function listJobs(db, q) {
   const offset = Number(q.offset || 0);
   return db.query(
     `select j.*, c.name as customer, v.name as vendor, lp.code as pol, ld.code as pod,
+            sh.direction as ff_direction, sh.mode as ff_mode, sh.vessel as ff_vessel, sh.etd as ff_etd, sh.eta as ff_eta,
+            (select count(*) from job_container jc where jc.job_id = j.id)::int as ff_containers,
             b.selling, b.cost, b.invoiced, b.received, b.requested, b.paid,
             kt.vendor as kurang_transfer_vendor, kt.customer as kurang_bayar_customer,
             st.stage, st.trip_status, st.sj_status, st.customer_status, st.vendor_status, st.sj_late, st.lead_time_sj,
@@ -203,6 +256,7 @@ async function listJobs(db, q) {
                  then extract(epoch from (coalesce(j.gate_in_at, now()) - j.gate_out_at)) / 3600 > sla.sla_hours end as lewat_sla
      from job j
      left join route_sla sla on sla.pol_id = j.pol_id and sla.pod_id = j.pod_id and sla.trip_type = j.trip_type
+     left join job_shipment sh on sh.job_id = j.id
      join v_job_status st on st.job_id = j.id
      join res_partner c on c.id = j.customer_id
      left join res_partner v on v.id = j.vendor_id
@@ -242,7 +296,9 @@ async function createJob(t, req, b, extra = {}) {
   const { mode, selling, cost } = await resolveAmounts(t, b);
   const yymm = String(b.job_date).slice(2, 4) + String(b.job_date).slice(5, 7);
   const row = pick(b, HEADER_FIELDS);
-  row.job_number = b.job_number ? String(b.job_number).trim() : await nextNumber(t, `JOB/${yymm}`, `AMC/${yymm}/`);
+  row.service_type = isFF(b.service_type) ? "FORWARDING" : "TRUCKING";
+  row.job_number = b.job_number ? String(b.job_number).trim()
+    : (await nextNumber(t, `JOB/${yymm}`, `AMC/${yymm}/`)) + (isFF(row.service_type) ? "FF" : "");   // FF: urutan nomor yang sama + akhiran FF
   row.selling_mode = mode;
   await defaultSchemes(t, row);
   await newVendorBank(t, b, b.vendor_id);
@@ -254,7 +310,8 @@ async function createJob(t, req, b, extra = {}) {
   await insertRow(t, "job_line", { job_id: id, side: "PURCHASE", product_id: await productId(t, "TRUCKING"),
     partner_id: b.vendor_id ? Number(b.vendor_id) : null, partner_bank_id: b.vendor_bank_id ? Number(b.vendor_bank_id) : null,
     description: "Sewa truk", amount: cost });
-  await audit(t, req, "job", id, "create", { job_number: row.job_number, selling, cost, ...extra });
+  if (isFF(row.service_type)) await saveShipment(t, id, b, { creating: true });
+  await audit(t, req, "job", id, "create", { job_number: row.job_number, selling, cost, ...(isFF(row.service_type) ? { jenis: "ekspor / impor" } : {}), ...extra });
   return { id, job_number: row.job_number };
 }
 
@@ -323,6 +380,8 @@ export default function jobRoutes(db) {
       sj_deliveries: await db.query(
         `select d.* from sj_delivery d join sj_delivery_line l on l.delivery_id = d.id where l.job_id = $1 order by d.id`, [id]),
       unassigned: await db.query("select * from v_unassigned where job_id = $1 order by move_date, move_line_id", [id]),
+      shipment: (await db.query("select * from job_shipment where job_id = $1", [id]))[0] || null,
+      containers: await db.query("select * from job_container where job_id = $1 order by id", [id]),
       refund_requests: await db.query(
         `select r.*, m.number as pengajuan, ru.display_name as requested_by_name, du.display_name as decided_by_name, cn.number as credit_note
          from vendor_refund_request r join account_move_line ml on ml.id = r.move_line_id join account_move m on m.id = ml.move_id
@@ -372,6 +431,12 @@ export default function jobRoutes(db) {
       fail(`${job.job_number} sudah diubah${who} sejak form ini dibuka. Tutup form, buka lagi, lalu ulangi perubahan Anda supaya perubahan itu tidak tertimpa.`, 409);
     }
     if ("job_date" in b && String(b.job_date).slice(0, 10) !== String(job.job_date).slice(0, 10)) checkJobDate(b.job_date);
+    // jenis job (domestik / ekspor-impor) melekat di nomornya (akhiran FF): tidak bisa diganti, batalkan lalu buat job baru
+    if ("service_type" in b && b.service_type && (isFF(b.service_type) ? "FORWARDING" : "TRUCKING") !== job.service_type) {
+      fail("Jenis job (domestik / ekspor-impor) tidak bisa diganti. Batalkan job ini lalu buat job baru dengan jenis yang benar.");
+    }
+    delete b.service_type;
+    if (isFF(job.service_type)) await saveShipment(t, id, b);
     // hanya dicek kalau kode tugasnya diganti, supaya job lama yang terlanjur dobel tetap bisa diedit (dan dibetulkan)
     if ("do_number" in b && normDo(b.do_number) !== normDo(job.do_number)) await assertUniqueDo(t, b.do_number, id);
     // rit: dicek kalau customer / tujuan / tanggal / rit-nya diganti (sama seperti kode tugas)

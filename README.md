@@ -113,6 +113,15 @@ importer), dan KURANG TRANSFER. Aturan ada di kepala `lib/import-jobreg.js`. Yan
   masing-masing dengan Tanggal, Nopol, Nama, No Hp, Kode Tugas (boleh kosong). Customer, asal muat, lingkup, trip, harga dipilih
   sekali untuk semua (diingat untuk berikutnya). Tabel pratinjau bisa dikoreksi; server mengecek tiap baris lalu semua dibuat
   sekaligus (satu baris bermasalah = tidak ada yang dibuat).
+- **Job ekspor / impor (FF)**: saat membuat job pilih *Domestik* atau *Ekspor / impor*. Nomor job FF memakai urutan nomor yang sama
+  dengan domestik bulan itu + akhiran FF (AMC/2610/0793FF), jadi satu nomor selalu satu job. Job FF punya **data pengiriman**
+  (ekspor / impor, laut / udara, muatan FCL / LCL / UDARA, shipper, consignee, komoditas, koli, berat KGM, volume M3, pelayaran,
+  kapal / penerbangan, voyage, ETD / ETA, master & house B/L / AWB, aju, PEB / PIB, incoterm) dan **daftar kontainer** (nomor,
+  20' / 40' / 40' HC / 45', segel; nomor boleh menyusul). Jenis biaya tambahan: freight, THC, dokumen, bea cukai / PPJK,
+  storage / demurrage, handling. Cetakan invoice satu job FF mengisi blok Commodity, B/L, Vessel, AJU, POL/POD/ETD, KGM/M3,
+  Shipment Type dari data itu. Syarat tagih job FF = ETD terisi (pengganti kode tugas + gate out). Jenis job tidak bisa diganti
+  setelah dibuat. Impor ulang JOB REG menyimpan data pengiriman & kontainer lalu memasangnya lagi ke job bernomor sama.
+  Tagihan dalam USD menyusul (tahap 2).
 - **Uang kembali dari vendor** (tombol di halaman job, FINANCE): uang yang sudah dibayar ke vendor / driver dikembalikan (trip tidak
   jadi jalan, atau hanya terpakai sebagian). Satu langkah membuat **nota kredit vendor** `NKV/YYYY/NNNN` (mengurangi pengajuan, fase
   sama) + **uang kembali** `RFD/YYYY/NNNN` (uang masuk ke rekening yang dipilih, tampil MASUK "UANG KEMBALI" di Jurnal Kas untuk

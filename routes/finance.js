@@ -131,20 +131,22 @@ export async function checkMove(t, moveId) {
   const [m] = await t.query("select * from account_move where id = $1", [moveId]);
   const lines = await t.query(
     `select ml.*, j.job_number, j.state as job_state, j.customer_id, j.customer_scheme, j.vendor_scheme, j.do_number, j.gate_out_at,
-            jl.side, p.kind, jl.amount as line_amount
+            j.service_type, sh.etd as ff_etd, jl.side, p.kind, jl.amount as line_amount
      from account_move_line ml join job j on j.id = ml.job_id join job_line jl on jl.id = ml.job_line_id
-     join product p on p.id = jl.product_id
+     join product p on p.id = jl.product_id left join job_shipment sh on sh.job_id = j.id
      where ml.move_id = $1 and ml.cancelled_at is null`, [moveId]);
   if (!lines.length) fail("Dokumen kosong, pilih minimal 1 job");
   const side = m.move_type === "out_invoice" ? "SALE" : "PURCHASE";
   // Job yang masih rencana hanya boleh diajukan untuk kebutuhan operasional (DP / calo vendor).
-  // Tagihan customer dan pelunasan / full vendor perlu kode tugas + jam gate out.
+  // Tagihan customer dan pelunasan / full vendor perlu kode tugas + jam gate out (domestik), atau ETD (ekspor / impor).
   const needGate = (side === "SALE" || ["SETTLEMENT", "FULL"].includes(m.phase)) && (await setting(t, "require_gate_for_billing", true)) !== false;
   for (const l of lines) {
     const tag = l.job_number;
     if (l.job_state === "cancelled") fail(`${tag}: job sudah dibatalkan`);
     if (l.side !== side) fail(`${tag}: baris order tidak cocok dengan jenis dokumen`);
-    if (needGate && (!l.do_number || /TIDAK\s*ADA|^-+$/i.test(l.do_number.trim()) || !l.gate_out_at)) fail(`${tag}: isi kode tugas dan jam gate out dulu (job masih rencana)`);
+    if (needGate && l.service_type === "FORWARDING") {
+      if (!l.ff_etd) fail(`${tag}: isi ETD di data pengiriman dulu (job ekspor / impor masih rencana)`);
+    } else if (needGate && (!l.do_number || /TIDAK\s*ADA|^-+$/i.test(l.do_number.trim()) || !l.gate_out_at)) fail(`${tag}: isi kode tugas dan jam gate out dulu (job masih rencana)`);
     if (m.move_type === "out_invoice" && l.customer_id !== m.partner_id) fail(`${tag}: customer job beda dengan customer invoice`);
     const scheme = side === "SALE" ? l.customer_scheme : l.vendor_scheme;
     const who = side === "SALE" ? "customer" : "vendor";
@@ -272,8 +274,14 @@ export async function loadMove(q, id) {
             (select a.detail from audit_log a where a.entity = 'job' and a.entity_id = j.id and a.action = 'reroute' order by a.id desc limit 1) as reroute,
             concat(lp.code, ' - ', ld.code, case when j.trip_type = 'ROUND_TRIP' then ' PP' else '' end) as route,
             coalesce((select sum(pl.amount) from account_payment_line pl where pl.move_line_id = ml.id), 0) as paid,
-            (select sum(jl2.amount) from job_line jl2 where jl2.job_id = j.id and jl2.side = 'SALE') as job_selling
+            (select sum(jl2.amount) from job_line jl2 where jl2.job_id = j.id and jl2.side = 'SALE') as job_selling,
+            j.service_type, sh.direction as ff_direction, sh.mode as ff_mode, sh.shipper as ff_shipper, sh.consignee as ff_consignee,
+            sh.commodity as ff_commodity, sh.packages as ff_packages, sh.package_unit as ff_package_unit, sh.gross_weight as ff_gross_weight,
+            sh.volume as ff_volume, sh.vessel as ff_vessel, sh.voyage as ff_voyage, sh.etd as ff_etd, sh.mbl_number as ff_mbl, sh.hbl_number as ff_hbl,
+            sh.aju_number as ff_aju, sh.customs_number as ff_customs, lp.name as pol_name, ld.name as pod_name,
+            (select string_agg(x.n || 'x' || x.size, ', ' order by x.size) from (select size, count(*) as n from job_container where job_id = j.id group by size) x) as ff_containers
      from account_move_line ml join job j on j.id = ml.job_id left join job_line jl on jl.id = ml.job_line_id
+     left join job_shipment sh on sh.job_id = j.id
      left join product p on p.id = jl.product_id left join res_partner payee on payee.id = ml.payee_partner_id
      join location lp on lp.id = j.pol_id join location ld on ld.id = j.pod_id join res_partner cu on cu.id = j.customer_id
      where ml.move_id = $1 order by ml.line_no, ml.id`, [id]);

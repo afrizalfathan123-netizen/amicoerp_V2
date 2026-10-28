@@ -1032,6 +1032,52 @@ try {
     assert.equal(await lockSupabaseApi(db), 0);
   });
 
+  await step("job ekspor / impor (FF): nomor urut sama + akhiran FF, data pengiriman & kontainer, jenis tidak bisa diganti, tampil di invoice", async () => {
+    const base = { job_date: "2026-11-03", customer_id: id.LINTAS, pol_id: id.JRT, pod_id: id.SBY, trip_type: "ONE_WAY", selling_mode: "CUSTOM", selling: 25000000, cost: 20000000 };
+    const ship = { direction: "EXPORT", mode: "SEA", shipper: "PT Ekspor Jaya", consignee: "ABC Trading Pte Ltd", commodity: "Kopi bubuk", packages: 1200,
+      package_unit: "CTN", gross_weight: 18500.5, volume: 56.2, carrier: "Evergreen", vessel: "EVER GIVEN", voyage: "1234W", etd: "2026-11-05", eta: "2026-11-12",
+      mbl_number: "EGLV123456789", hbl_number: "AMC-HBL-001", aju_number: "000123", customs_number: "PEB-998877", incoterm: "FOB" };
+    // cek isian
+    assert.match(await ops.call("POST", "/jobs", { ...base, service_type: "FORWARDING", truck_type: "FCL", shipment: { mode: "SEA" } }, 400), /ekspor atau impor/);
+    assert.match(await ops.call("POST", "/jobs", { ...base, service_type: "FORWARDING", truck_type: "FCL", shipment: { ...ship, eta: "2026-11-01" } }, 400), /ETA/);
+    assert.match(await ops.call("POST", "/jobs", { ...base, service_type: "FORWARDING", truck_type: "FCL", shipment: ship, containers: [{ size: "30" }] }, 400), /tidak dikenal/);
+    assert.match(await ops.call("POST", "/jobs", { ...base, service_type: "FORWARDING", truck_type: "FCL", shipment: ship,
+      containers: [{ container_number: "TCLU1234567", size: "40" }, { container_number: "tclu 1234567", size: "40" }] }, 400), /dua kali/);
+    // nomor: urutan yang sama dengan domestik, FF = akhiran
+    const ff = await ops.call("POST", "/jobs", { ...base, service_type: "FORWARDING", truck_type: "FCL", shipment: ship,
+      containers: [{ container_number: "tclu 1234567", size: "40hc", seal_number: "SL-1" }, { size: "20" }] });
+    const dom = await ops.call("POST", "/jobs", { ...base, truck_type: "CDDL" });
+    const n = (x) => Number(x.job_number.match(/^AMC\/2611\/(\d+)/)[1]);
+    assert.match(ff.job_number, /^AMC\/2611\/\d{4}FF$/);
+    assert.equal(n(dom), n(ff) + 1);
+    let d = await fin.call("GET", `/jobs/${ff.id}`);
+    assert.deepEqual([d.job.service_type, d.shipment.direction, d.shipment.gross_weight, d.shipment.etd, d.containers.map((c) => [c.container_number, c.size, c.seal_number])],
+      ["FORWARDING", "EXPORT", 18500.5, "2026-11-05", [["TCLU1234567", "40HC", "SL-1"], [null, "20", null]]]);
+    // jenis job tidak bisa diganti; data pengiriman & kontainer bisa diubah
+    assert.match(await ops.call("PUT", `/jobs/${ff.id}`, { service_type: "TRUCKING", expected_version: d.job.version }, 400), /tidak bisa diganti/);
+    await ops.call("PUT", `/jobs/${ff.id}`, { shipment: { ...ship, vessel: "EVER ACE", eta: "2026-11-14" }, containers: [{ container_number: "MSKU7654321", size: "40HC" }], expected_version: d.job.version });
+    d = await fin.call("GET", `/jobs/${ff.id}`);
+    assert.deepEqual([d.shipment.vessel, d.shipment.eta, d.containers.length], ["EVER ACE", "2026-11-14", 1]);
+    // job domestik tidak punya data pengiriman
+    assert.equal((await fin.call("GET", `/jobs/${dom.id}`)).shipment, null);
+    // daftar job: filter jenis + arah
+    const list = await fin.call("GET", "/jobs?service=FF&limit=50");
+    assert.ok(list.every((j) => j.service_type === "FORWARDING"));
+    assert.deepEqual(list.filter((j) => j.id === ff.id).map((j) => [j.ff_direction, j.ff_mode, j.ff_containers]), [["EXPORT", "SEA", 1]]);
+    // biaya khas forwarding
+    await fin.call("POST", `/jobs/${ff.id}/lines`, { side: "PURCHASE", kind: "THC", partner_id: id.SINAR, amount: 2500000, description: "THC Tanjung Priok" });
+    assert.ok((await fin.call("GET", `/jobs/${ff.id}`)).lines.some((l) => l.kind === "THC" && l.amount === 2500000));
+    // syarat tagih job FF = ETD terisi (bukan kode tugas + gate out)
+    await admin.call("PUT", "/settings", { require_gate_for_billing: true });
+    const noEtd = await ops.call("POST", "/jobs", { ...base, service_type: "FORWARDING", truck_type: "LCL", shipment: { direction: "IMPORT", mode: "AIR" } });
+    assert.match(await fin.call("POST", "/moves", { move_type: "out_invoice", phase: "DP", bank_account_id: id.BCA, lines: [{ job_id: noEtd.id, amount: 100 }] }, 400), /isi ETD/);
+    // invoice: data pengiriman ikut (untuk blok keterangan cetakan); job FF ber-ETD boleh ditagih walau tanpa kode tugas / gate out
+    const inv = await createMove({ move_type: "out_invoice", phase: "DP", move_date: "2026-11-03", bank_account_id: id.BCA, lines: [{ job_id: ff.id, amount: 17500000 }] });
+    const ln = (await fin.call("GET", `/moves/${inv.id}`)).lines[0];
+    assert.deepEqual([ln.ff_direction, ln.ff_mode, ln.ff_vessel, ln.ff_mbl, ln.ff_containers], ["EXPORT", "SEA", "EVER ACE", "EGLV123456789", "1x40HC"]);
+    await admin.call("PUT", "/settings", { require_gate_for_billing: false });
+  });
+
   await step("ringan: jawaban dikompresi, file tampilan tanpa cek sesi, ringkasan status cocok dengan daftar job", async () => {
     const root = base.replace(/\/api$/, "");
     const login = await fetch(`${base}/login`, { method: "POST", headers: { "Content-Type": "application/json" },

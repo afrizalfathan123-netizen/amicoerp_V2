@@ -26,7 +26,8 @@ export const STATE_LABEL = {
   draft: "Draft", posted: "Posted", cancelled: "Dibatalkan", confirmed: "Berjalan", done: "Trip selesai", reversed: "Dibalik",
   PENDING: "Menunggu persetujuan", APPROVED: "Disetujui", REJECTED: "Ditolak", NOT_REQUIRED: "",
 };
-export const KIND_LABEL = { TRUCKING: "Trucking", CALO: "Calo", TOL: "Tol", PARKIR: "Parkir", BONGKAR: "Bongkar muat", LAINNYA: "Biaya lain", SELISIH: "Selisih", SELLING: "Selling" };
+export const KIND_LABEL = { TRUCKING: "Trucking", CALO: "Calo", TOL: "Tol", PARKIR: "Parkir", BONGKAR: "Bongkar muat", LAINNYA: "Biaya lain", SELISIH: "Selisih", SELLING: "Selling",
+  FREIGHT: "Freight", THC: "THC", DOKUMEN: "Dokumen", BEA_CUKAI: "Bea cukai / PPJK", STORAGE: "Storage / demurrage", HANDLING: "Handling" };
 export const SELLING_MODES = { PRICE_BOOK: "Sesuai price book", CUSTOM: "Custom", ZERO: "0 (tanpa selling)" };
 export const ROLE_LABEL = { ADMIN: "Admin", FINANCE: "Finance", OPERATIONAL: "Operasional", VIEWER: "Viewer" };
 

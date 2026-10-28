@@ -214,9 +214,15 @@ await step("impor ulang dengan reset: unit, kontrak & tagihan sewa, SLA, price b
   await db.query("update res_partner set attn = 'Pak Budi', phone = '021-1' where name = 'GARBANTARA'");
   await db.query("insert into res_partner_bank (partner_id, bank_name, account_number, holder) values ($1, 'BRI', '555', 'Pemilik')", [vend.id]);
   const banks = (await db.query("select count(*)::int as n from res_bank_account"))[0].n;
+  // data ekspor / impor yang diisi di ERP untuk job AMC/2607/0001
+  const [j1] = await db.query("select id from job where job_number = 'AMC/2607/0001'");
+  await db.query("insert into job_shipment (job_id, direction, mode, vessel) values ($1, 'IMPORT', 'SEA', 'KMTC SEOUL')", [j1.id]);
+  await db.query("insert into job_container (job_id, container_number, size) values ($1, 'TGHU1111111', '20'), ($1, null, '40HC')", [j1.id]);
   const again = await importJobReg({ file, target: db, start: "AMC/2607/0001", reset: true, log: () => {} });
   assert.deepEqual(again.stats.erpKept, { unit: 1, kontrak: 1, tagihan_sewa: 1, bayar_sewa: 1, sla: 1, price_book: 1,
-    rekening_amico: banks, isian_partner: 1, rekening_partner: 1 });
+    rekening_amico: banks, isian_partner: 1, rekening_partner: 1, data_pengiriman_ff: 1, kontainer_ff: 2 });
+  const [s1] = await db.query("select j.service_type, s.direction, s.vessel, (select count(*)::int from job_container c where c.job_id = j.id) as kontainer from job j join job_shipment s on s.job_id = j.id where j.job_number = 'AMC/2607/0001'");
+  assert.deepEqual(s1, { service_type: "FORWARDING", direction: "IMPORT", vessel: "KMTC SEOUL", kontainer: 2 });
   // rekening AMICO & kas operasional persis, tidak ada "Rekening AMICO (impor JOB REG)" baru
   assert.equal((await db.query("select count(*)::int as n from res_bank_account"))[0].n, banks);
   assert.equal((await db.query("select count(*)::int as n from res_bank_account where name = 'Kas Ops' and kind = 'OPERATIONAL'"))[0].n, 1);

@@ -424,6 +424,18 @@ html.busy::before { opacity: 1; transition: opacity .15s .25s; animation: progre
 .wa-foot #waInfo { flex: 1; min-width: 220px; }
 .ok-text { color: var(--olive-ink); }
 .radio-list { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 10px; }
+/* job ekspor / impor (FF) */
+.badge.ff { background: #e3eefb; color: #1d4f8a; }
+.seg-choice { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.seg-choice .radio { display: flex; flex-direction: row; align-items: baseline; gap: 8px; border: 1px solid var(--line-2); border-radius: 10px; padding: 9px 12px; cursor: pointer; flex: 1 1 260px; }
+.seg-choice .radio:has(input:checked) { border-color: var(--ink); background: var(--panel-2, rgba(0,0,0,.03)); }
+.seg-choice .radio input { width: auto; }
+.seg-choice .muted { font-size: 12px; }
+.cont-row { display: grid; grid-template-columns: minmax(0, 2fr) 110px minmax(0, 1.4fr) auto; gap: 8px; margin-bottom: 6px; align-items: center; }
+@media (max-width: 640px) { .cont-row { grid-template-columns: minmax(0, 1fr) 90px; } }
+.cont-add { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 4px 0 12px; }
+.cont-add input[type=number] { width: 64px; }
+.cont-add select { width: auto; }
 .radio-list .radio { display: flex; flex-direction: row; align-items: center; gap: 8px; font-size: 13px; }
 .radio-list .radio input { width: auto; }
 /* Buat banyak job: tabel pratinjau yang bisa diketik langsung */

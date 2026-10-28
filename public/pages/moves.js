@@ -439,7 +439,20 @@ function renderInvoicePrint(m, s) {
   const billAddr = m.bill_to_address || m.partner_address || "";
   const billNpwp = m.bill_to_npwp || m.partner_npwp || "";
   const trucks = [...new Set(jobs.map((l) => l.truck_type).filter(Boolean))].join(", ");
-  const info = [
+  // invoice satu job ekspor / impor: blok keterangan diisi dari data pengiriman job itu
+  const ff = jobs.length === 1 && jobs[0].ff_direction ? jobs[0] : null;
+  const num2 = (v) => (v == null ? "" : Number(v).toLocaleString("id-ID", { maximumFractionDigits: 3 }));
+  const ffType = ff ? `${ff.ff_mode === "AIR" ? "Air" : "Sea"} ${ff.ff_direction === "EXPORT" ? "Export" : "Import"}${ff.truck_type ? ` ${ff.truck_type}` : ""}${ff.ff_containers ? ` (${ff.ff_containers})` : ""}` : "";
+  const info = ff ? [
+    ["Client Name", `<b>${esc(billName)}</b>`, "Our Ref No", ""],
+    ["Commodity/ Pkts", esc([ff.ff_commodity, ff.ff_packages != null ? `${num2(ff.ff_packages)} ${ff.ff_package_unit || ""}`.trim() : ""].filter(Boolean).join(" / ")),
+     "Shipper / Consignee", esc([ff.ff_shipper, ff.ff_consignee].filter(Boolean).join(" / "))],
+    ["Bill of Landing", esc(ff.ff_mbl || ""), "House/B Landing", esc(ff.ff_hbl || "")],
+    ["Vessel/Voyage", esc([ff.ff_vessel, ff.ff_voyage].filter(Boolean).join(" / ")), "AJU/PO", esc([ff.ff_aju, ff.ff_customs].filter(Boolean).join(" / "))],
+    ["POL/POD/ETD", esc([`${ff.pol} / ${ff.pod}`, ff.ff_etd ? dmy(ff.ff_etd) : ""].filter(Boolean).join(" / ")),
+     "KGM/ M3", esc([ff.ff_gross_weight != null ? num2(ff.ff_gross_weight) : "", ff.ff_volume != null ? num2(ff.ff_volume) : ""].filter(Boolean).join(" / "))],
+    ["Shipment Type", esc(ffType), "Our Job No", esc(ff.job_number)],
+  ] : [
     ["Client Name", `<b>${esc(billName)}</b>`, "Our Ref No", ""], ["Commodity/ Pkts", "", "Shipper / Consignee", ""],
     ["Bill of Landing", "", "House/B Landing", ""], ["Vessel/Voyage", "", "AJU/PO", ""], ["POL/POD/ETD", "", "KGM/ M3", ""],
     ["Shipment Type", esc(trucks ? `Trucking ${trucks}` : "Trucking"), "Our Job No", esc(jobs.length === 1 ? jobs[0].job_number : "")],
