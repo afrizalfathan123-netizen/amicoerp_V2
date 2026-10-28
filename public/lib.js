@@ -252,7 +252,7 @@ export function bindRows(root = view()) {
   root._rowsBound = true;
   root.addEventListener("click", (e) => {
     const tr = e.target.closest("tr[data-href]");
-    if (!tr || !root.contains(tr) || e.target.closest("a,button,input,select,label,[data-noclick]")) return;
+    if (!tr || !root.contains(tr) || e.target.closest("a,button,input,select,label,[data-noclick],.xl-sel")) return;
     location.hash = tr.dataset.href;
   });
 }

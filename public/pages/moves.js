@@ -69,7 +69,7 @@ async function renderMoves(type) {
   await load();
 }
 
-// preset (dari halaman AR / AP): { partner_id, phase, job_ids } -> job itu saja, langsung dicentang
+// preset (dari halaman AR / AP / Job): { partner_id, phase, job_ids, from } -> job itu saja, langsung dicentang
 export function moveForm(type, preset = {}) {
   const isInv = type === "out_invoice";
   const phases = isInv ? { DP: PHASE_LABEL.DP, SETTLEMENT: PHASE_LABEL.SETTLEMENT, FULL: PHASE_LABEL.FULL } : PHASE_LABEL;
@@ -91,7 +91,7 @@ export function moveForm(type, preset = {}) {
         <label>Cari job / plat<input name="search" placeholder="atau tempel daftar no job di sini"></label>
         <div style="align-self:end"><button type="button" id="mvPasteBtn" title="Tempel banyak no job / kode tugas sekaligus dari Excel atau WhatsApp">Tempel daftar job</button></div>
         ${isInv ? `<label class="check"><input type="checkbox" name="sj_received" ${preset.job_ids ? "" : "checked"}> Hanya job yang SJ-nya sudah diterima</label>` : ""}
-        ${preset.job_ids ? `<label class="check wide"><input type="checkbox" name="only_preset" checked> Hanya ${preset.job_ids.length} job yang dicentang di ${isInv ? "AR Customer" : "AP Vendor"}</label>` : ""}
+        ${preset.job_ids ? `<label class="check wide"><input type="checkbox" name="only_preset" checked> Hanya ${preset.job_ids.length} job yang dicentang di ${esc(preset.from || (isInv ? "AR Customer" : "AP Vendor"))}</label>` : ""}
         <label class="wide">Catatan<input name="note"></label>
       </div>
       <div id="mvPaste" style="margin-top:12px"></div>

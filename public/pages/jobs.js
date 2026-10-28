@@ -11,6 +11,7 @@ import { unassignedTable } from "./unassigned.js";
 import { xlTable } from "../xlfilter.js";
 import { parseWaJob } from "../wa-paste.js";
 import { batchJobForm } from "./jobs-batch.js";
+import { moveForm } from "./moves.js";
 
 const SCOPE = { INTERCITY: "Antar kota", INNERCITY: "Dalam kota" };
 const TRIP = { ONE_WAY: "One way", ROUND_TRIP: "PP / round trip" };
@@ -67,7 +68,7 @@ const gateCell = (j, field) => {
     ${field === "gate_in_at" ? `<div class="gate-note">${gateNote(j)}</div>` : ""}</td>`;
 };
 const stageCell = (j) => `${stageBadge(j.stage)}${j.sj_late ? `<br><span class="badge warn" title="${esc(SJ_LATE_LABEL[j.sj_late])}">SJ terlambat</span>` : ""}${shortBadge(j)}`;
-const jobRow = (j) => `<tr class="click" data-href="#/jobs/${j.id}" data-job="${j.id}">
+const jobRow = (j, sel = "") => `<tr class="click" data-href="#/jobs/${j.id}" data-job="${j.id}">${sel}
   <td><b>${esc(j.job_number)}</b>${isFF(j) ? `<br><span class="badge ff" title="${esc([j.ff_vessel, j.ff_etd ? `ETD ${tgl(j.ff_etd)}` : "", j.ff_containers ? `${j.ff_containers} kontainer` : ""].filter(Boolean).join(" · "))}">${esc(ffLabel(j))}</span>` : ""}</td><td>${esc(j.do_number || "")}</td><td class="nowrap">${tgl(j.job_date)}</td>${gateCell(j, "gate_out_at")}${gateCell(j, "gate_in_at")}<td>${esc(j.customer)}</td>
   <td>${esc(routeOf(j))}${j.delivery_scope === "INNERCITY" ? `<br><span class="muted">dalam kota${j.rit_number ? ` rit ${j.rit_number}` : ""}</span>` : ""}</td>
   <td>${esc(j.truck_type)}</td><td class="nowrap">${esc(j.plate_number || "")}</td><td>${esc(j.driver1_name || "")}</td>
@@ -101,6 +102,7 @@ export async function renderJobs() {
         <button id="jPaste" title="Tempel daftar no job / kode tugas dari Excel atau WhatsApp">Tempel daftar</button>
       </div>
       <div id="dupDoBox"></div>
+      <div id="jobAction"></div>
       <div id="pasteBox"></div>
       <div id="jobTable">${skelTable(10, 8)}</div>
     </div>`;
@@ -116,6 +118,9 @@ export async function renderJobs() {
     id: "jobs", columns: JOB_COLUMNS, rowHtml: jobRow, empty: "Tidak ada job",
     order: (a, b) => (paste ? (posMap.get(keyOf(a)) ?? 1e9) - (posMap.get(keyOf(b)) ?? 1e9) : 0),
     onChange: () => bindRows(el("jobTable")),
+    // centang job -> pengajuan vendor (OPERATIONAL / FINANCE) atau invoice (FINANCE) untuk job itu saja
+    rowId: canRequest() ? (j) => j.id : null,
+    onSelect: (rows) => jobActionBar(el("jobAction"), rows, () => grid.clearSelection()),
   });
 
   const showPaste = (rows) => {
@@ -926,4 +931,46 @@ export function bindRefundRequests(box) {
   box.querySelectorAll("[data-rr-reject]").forEach((b) => (b.onclick = () => askReason("Tolak pengajuan uang kembali", "Mis. uangnya belum / tidak masuk. Operasional bisa mengajukan lagi.",
     (reason) => api("POST", `/vendor-refund-requests/${b.dataset.rrReject}/reject`, { reason }), "Tolak")));
   box.querySelectorAll("[data-rr-cancel]").forEach((b) => (b.onclick = action(() => api("POST", `/vendor-refund-requests/${b.dataset.rrCancel}/cancel`, {}), "Pengajuan ditarik")));
+}
+
+// ---------------------------------------------------------------- centang job -> pengajuan / invoice
+// Seperti AP Vendor / AR Customer, tapi langsung dari daftar job (gate, plat, driver terlihat). Tombol hanya untuk fase yang
+// memang bisa diajukan job-job itu, dengan jumlah job & nominal sarannya.
+const VENDOR_PHASES = [["DP", "DP vendor"], ["SETTLEMENT", "Pelunasan vendor"], ["FULL", "Full 100% vendor"], ["OTHER", "Calo / biaya lain"]];
+const INVOICE_PHASES = [["DP", "Invoice DP"], ["SETTLEMENT", "Invoice pelunasan"], ["FULL", "Invoice full 100%"]];
+const actionSeq = latest();
+let actionTimer = null;
+function jobActionBar(box, sel, clear) {
+  if (!box) return;
+  clearTimeout(actionTimer);
+  if (!sel.length) { box.innerHTML = ""; return; }
+  box.innerHTML = `<div class="note-box action-box"><span><b>${rp(sel.length)} job dicentang.</b> Mengecek fase yang bisa diajukan...</span></div>`;
+  actionTimer = setTimeout(async () => {
+    const ids = sel.map((j) => j.id);
+    const ask = (move_type, phase) => api("POST", "/moves/eligible", { move_type, phase, job_ids: ids })
+      .then((rows) => rows.filter((r) => r.suggested > 0)).catch(() => []);
+    const plan = [...VENDOR_PHASES.map(([p, l]) => ["in_invoice", p, l]), ...(canFinance() ? INVOICE_PHASES.map(([p, l]) => ["out_invoice", p, l]) : [])];
+    const res = await actionSeq(Promise.all(plan.map(([t, p]) => ask(t, p))));
+    const opts = plan.map(([type, phase, label], i) => {
+      const rows = res[i];
+      const jobs = [...new Set(rows.map((r) => r.job_id))];
+      const custs = new Set(rows.map((r) => r.customer_id));
+      return { type, phase, label, jobs, amount: rows.reduce((a, r) => a + Number(r.suggested || 0), 0), oneCustomer: custs.size <= 1, customer: rows[0]?.customer_id };
+    }).filter((o) => o.jobs.length);
+    const usable = new Set(opts.flatMap((o) => o.jobs));
+    const none = sel.filter((j) => !usable.has(j.id)).length;
+    box.innerHTML = `<div class="note-box action-box"><span><b>${rp(sel.length)} job dicentang.</b>
+        ${opts.length ? "" : " Tidak ada fase yang bisa diajukan / ditagih untuk job ini (sudah diajukan semua, atau job batal)."}
+        ${none && opts.length ? ` ${rp(none)} job tidak bisa diajukan untuk fase apa pun.` : ""}
+        ${opts.some((o) => o.type === "out_invoice" && !o.oneCustomer) ? " Invoice dibuat per customer: centang job dari satu customer saja." : ""}</span><span class="spacer"></span>
+      ${opts.map((o, i) => `<button type="button" class="small ${o.type === "in_invoice" ? "primary" : ""}" data-act="${i}"
+          ${o.type === "out_invoice" && !o.oneCustomer ? 'disabled title="Invoice dibuat per customer: centang job dari satu customer saja"' : ""}>
+          ${o.type === "in_invoice" ? "Ajukan " : "Buat "}${esc(o.label)} (${rp(o.jobs.length)} job, ${rp(o.amount)})</button>`).join("")}
+      <button type="button" class="small" data-act-clear>Hapus centang</button></div>`;
+    box.querySelectorAll("[data-act]").forEach((b) => (b.onclick = () => {
+      const o = opts[Number(b.dataset.act)];
+      moveForm(o.type, { phase: o.phase, job_ids: o.jobs, partner_id: o.type === "out_invoice" ? o.customer : "", from: "halaman Job" });
+    }));
+    box.querySelector("[data-act-clear]").onclick = clear;
+  }, 300);
 }

@@ -130,6 +130,9 @@ importer), dan KURANG TRANSFER. Aturan ada di kepala `lib/import-jobreg.js`. Yan
   batalkan NKV. Pembayaran yang sudah punya uang kembali tidak bisa dibatal-bayar. Job boleh dibatalkan kalau semua dokumennya bersih 0.
 - **Satu rit = satu job**: customer + tujuan + tanggal + rit yang sama hanya boleh satu job aktif (rit berbeda boleh). Berlaku di
   Buat banyak job, Job baru, edit job, dan membuka lagi job batal. Rit yang sudah pernah dibuat ditandai "Sudah ada" di pratinjau.
+- Halaman **Job**: centang job (atau "centang semua" hasil filter), lalu bar aksi menampilkan fase yang bisa diajukan untuk job itu
+  saja beserta jumlah job & nominal: Ajukan DP / Pelunasan / Full vendor / Calo (OPERATIONAL & FINANCE), Buat invoice DP / pelunasan /
+  full (FINANCE, per customer). Klik = form pengajuan / invoice berisi job yang dicentang.
 - Form Pengajuan / Invoice baru: **Tempel daftar job** (atau tempel beberapa nomor langsung di kotak cari). Job di daftar itu saja
   yang tampil, urut sesuai tempelan dan langsung dicentang; nomor yang sudah diajukan penuh / tidak ketemu disebutkan.
 - Daftar job: filter & urut per kolom seperti Excel (klik ▾ di header), dan **Tempel daftar** no job atau kode tugas
