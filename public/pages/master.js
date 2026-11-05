@@ -113,7 +113,7 @@ async function renderSettings() {
       <label>Nama perusahaan<input name="company_name" value="${esc(s.company_name || "")}"></label>
       <label>NPWP<input name="company_npwp" value="${esc(s.company_npwp || "")}"></label>
       <label class="wide">Alamat (boleh 2 baris, tampil di kop invoice)<textarea name="company_address" rows="2">${esc(s.company_address || "")}</textarea></label>
-      <label>Tagline di kop invoice<input name="company_tagline" value="${esc(s.company_tagline ?? "Freight Forwarding & Logistics")}"></label>
+      <label>Tagline di kop invoice<input name="company_tagline" value="${esc(s.company_tagline ?? "PT Amico Logistics Indonesia")}"></label>
       <label>Nama penanda tangan invoice<input name="invoice_signer" value="${esc(s.invoice_signer || "")}" placeholder="mis. ARIF WIROYUDHO"></label>
       <div class="wide sig-box"><span>Tanda tangan di invoice (opsional, gambar PNG / JPG)</span>
         <div id="sigPreview">${s.invoice_signature ? `<img src="${esc(s.invoice_signature)}" alt="tanda tangan">` : `<span class="muted">Belum ada. Tanpa gambar, invoice dicetak dengan ruang kosong untuk tanda tangan basah.</span>`}</div>

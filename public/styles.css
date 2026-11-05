@@ -458,6 +458,34 @@ td.gate-cell input[type=datetime-local]:disabled { opacity: .45; }
 td.gate-cell input[type=datetime-local]:focus { background: #fff; }
 .gate-note { font-size: 11px; margin-top: 3px; }
 .gate-box button[hidden] { display: none; }
+/* Daftar job: warna baris mengikuti perjalanan (seperti ERP v1), garis lengkap, kolom rapat */
+#jobTable table { width: auto; min-width: 100%; font-size: 12px; line-height: 1.2; }
+#jobTable th, #jobTable td { border: 1px solid #dcc8a8; padding: 3px 5px; white-space: nowrap; vertical-align: middle; }
+#jobTable th { padding: 4px 5px; white-space: normal; background: var(--brand-soft); }
+#jobTable tbody tr:last-child td { border-bottom: 1px solid #dcc8a8; }
+#jobTable th.xl-sel, #jobTable td.xl-sel { width: 26px; text-align: center; }
+#jobTable tr.trip-draft td { background: #fdebd3; }
+#jobTable tr.trip-jalan td { background: #dfecfb; }
+#jobTable tr.trip-done td { background: #e0f2df; }
+#jobTable tr.trip-batal td { background: #eeeae4; color: var(--muted); }
+#jobTable tr.trip-draft:hover td { background: #fbdfba; }
+#jobTable tr.trip-jalan:hover td { background: #cfe2f8; }
+#jobTable tr.trip-done:hover td { background: #cfeacd; }
+#jobTable tr.trip-batal:hover td { background: #e6e1d9; }
+#jobTable td.gate-cell { min-width: 0; }
+#jobTable td.gate-cell input[type=datetime-local] { width: 142px; padding: 1px 3px; font-size: 11px; background: rgba(255, 255, 255, .75); }
+#jobTable td.gate-cell input[type=datetime-local]::-webkit-calendar-picker-indicator { margin: 0; padding: 0; width: 12px; }
+#jobTable td.gate-cell input[type=datetime-local]:focus { background: #fff; }
+#jobTable .gate-box button { padding: 1px 6px; min-height: 0; font-size: 11px; }
+#jobTable .gate-note { font-size: 10.5px; margin-top: 1px; }
+#jobTable .muted { font-size: 11px; }
+.trip-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 0 0 8px; font-size: 12px; color: var(--muted); }
+.trip-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.trip-legend i { width: 14px; height: 14px; border: 1px solid #dcc8a8; border-radius: 3px; }
+.trip-legend .draft { background: #fdebd3; }
+.trip-legend .jalan { background: #dfecfb; }
+.trip-legend .done { background: #e0f2df; }
+.trip-legend .batal { background: #eeeae4; }
 
 /* ---------------- unit sewa: kotak peringatan kontrak / tagihan ---------------- */
 .unit-alerts { margin: 0 0 14px; }
@@ -520,7 +548,7 @@ td.gate-cell input[type=datetime-local]:focus { background: #fff; }
      kalau tidak invoice meluber ke halaman kedua */
   main { padding: 0 !important; }
   .inv-doc + .inv-doc { margin-top: 0; }
-  .inv-doc:not(.inv-last) { break-after: page; }   /* tiap lembar invoice (maks 20 job) satu halaman */
+  .inv-doc:not(.inv-last) { break-after: page; }   /* tiap lembar invoice satu halaman (lanjutan maks 30 job, terakhir maks 20) */
   .inv-doc { border: 0; padding: 0; max-width: none; min-height: calc(297mm - 20mm - 8mm); }   /* sisa 8 mm supaya tidak meluber ke halaman kedua */
   .inv-lines th, .inv-info tr.shade td { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 }

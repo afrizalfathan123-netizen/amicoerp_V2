@@ -68,7 +68,9 @@ const gateCell = (j, field) => {
     ${field === "gate_in_at" ? `<div class="gate-note">${gateNote(j)}</div>` : ""}</td>`;
 };
 const stageCell = (j) => `${stageBadge(j.stage)}${j.sj_late ? `<br><span class="badge warn" title="${esc(SJ_LATE_LABEL[j.sj_late])}">SJ terlambat</span>` : ""}${shortBadge(j)}`;
-const jobRow = (j, sel = "") => `<tr class="click" data-href="#/jobs/${j.id}" data-job="${j.id}">${sel}
+// Warna baris: oranye belum gate out, biru sudah gate out belum gate in, hijau sudah gate in, abu-abu batal
+export const tripClass = (j) => (j.state === "cancelled" ? "trip-batal" : j.gate_in_at ? "trip-done" : j.gate_out_at ? "trip-jalan" : "trip-draft");
+const jobRow = (j, sel = "") => `<tr class="click ${tripClass(j)}" data-href="#/jobs/${j.id}" data-job="${j.id}">${sel}
   <td><b>${esc(j.job_number)}</b>${isFF(j) ? `<br><span class="badge ff" title="${esc([j.ff_vessel, j.ff_etd ? `ETD ${tgl(j.ff_etd)}` : "", j.ff_containers ? `${j.ff_containers} kontainer` : ""].filter(Boolean).join(" · "))}">${esc(ffLabel(j))}</span>` : ""}</td><td>${esc(j.do_number || "")}</td><td class="nowrap">${tgl(j.job_date)}</td>${gateCell(j, "gate_out_at")}${gateCell(j, "gate_in_at")}<td>${esc(j.customer)}</td>
   <td>${esc(routeOf(j))}${j.delivery_scope === "INNERCITY" ? `<br><span class="muted">dalam kota${j.rit_number ? ` rit ${j.rit_number}` : ""}</span>` : ""}</td>
   <td>${esc(j.truck_type)}</td><td class="nowrap">${esc(j.plate_number || "")}</td><td>${esc(j.driver1_name || "")}</td>
@@ -104,6 +106,7 @@ export async function renderJobs() {
       <div id="dupDoBox"></div>
       <div id="jobAction"></div>
       <div id="pasteBox"></div>
+      <div class="trip-legend"><span><i class="draft"></i>Belum jalan</span><span><i class="jalan"></i>Sedang jalan</span><span><i class="done"></i>Trip selesai</span><span><i class="batal"></i>Batal</span></div>
       <div id="jobTable">${skelTable(10, 8)}</div>
     </div>`;
   document.getElementById("newJob")?.addEventListener("click", () => jobForm());
@@ -179,6 +182,8 @@ export async function renderJobs() {
       input._saving = false;
     }
     if (!tr.isConnected) return;
+    tr.classList.remove("trip-draft", "trip-jalan", "trip-done", "trip-batal");
+    tr.classList.add(tripClass(j));
     tr.querySelector(".c-stage").innerHTML = stageCell(j);
     tr.querySelector(".gate-note").innerHTML = gateNote(j);
     tr.querySelectorAll("[data-gate]").forEach((i) => {

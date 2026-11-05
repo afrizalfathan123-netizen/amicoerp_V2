@@ -763,7 +763,7 @@ try {
     await fin.call("POST", `/units/contracts/${c4.id}/extend`, {});
     const p7004 = (await viewer.call("GET", "/units/periods")).periods.filter((x) => x.plate_number === "B 7004 PP");
     assert.deepEqual(p7004.map((x) => [x.ke, x.status]), [[1, "BERJALAN"], [2, "BELUM_MULAI"]]);
-    assert.equal(p7004[1].from, day(1));
+    assert.equal(p7004[1].from, new Date(Date.parse(`${p7004[0].to}T00:00:00Z`) + 864e5).toISOString().slice(0, 10));
     // tidak bisa menabrak kontrak berikutnya; kontrak tanpa tanggal selesai tidak perlu diperpanjang
     await fin.call("POST", "/units/contracts", { plate_number: "B 7002 PP", truck_type: "CDDL", date_start: "2026-09-17", monthly_rent: 9500000 });
     assert.match(await fin.call("POST", `/units/contracts/${c.id}/extend`, {}, 400), /berikutnya mulai 2026-09-17/);
@@ -810,7 +810,7 @@ try {
     assert.match(await fin.call("PUT", "/settings", { invoice_signer: "X" }, 403), /akses/);
     assert.match(await admin.call("PUT", "/settings", { invoice_signature: "data:text/html;base64,PHNjcmlwdD4=" }, 400), /PNG \/ JPG/);
     const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
-    await admin.call("PUT", "/settings", { company_tagline: "Freight Forwarding & Logistics", invoice_signer: "ARIF WIROYUDHO", invoice_signature: png });
+    await admin.call("PUT", "/settings", { company_tagline: "PT Amico Logistics Indonesia", invoice_signer: "ARIF WIROYUDHO", invoice_signature: png });
     const st = await viewer.call("GET", "/settings");
     assert.deepEqual([st.invoice_signer, st.invoice_signature === png], ["ARIF WIROYUDHO", true]);
     const log = (await admin.call("GET", "/audit?entity=app_setting"))[0];

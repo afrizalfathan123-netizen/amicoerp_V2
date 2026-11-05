@@ -406,6 +406,20 @@ export async function renderMovePrint(id) {
 // Invoice customer dengan format AMICO (sama dengan file Excel "INVOICE AMICO TO CUSTOMER"):
 // kop + logo, Bill to, blok keterangan, tabel per job, Sub Total - PPN - PPh 23 - TOTAL - DP - GRAND TOTAL, rekening, tanda tangan.
 // s = pengaturan terbaru dari server (kop, penanda tangan), bukan salinan saat login
+// Lembar invoice: kalau semua job muat di lembar terakhir (maks 20, karena ada rincian total & tanda tangan), cukup satu lembar.
+// Kalau lebih, lembar lanjutan diisi sampai 30 job, dan lembar terakhir selalu memuat minimal 1 job supaya totalnya tidak sendirian.
+export function invoicePages(jobs, last = 20, more = 30) {
+  const pages = [];
+  let i = 0;
+  while (jobs.length - i > last) {
+    const take = Math.min(more, jobs.length - i - 1);
+    pages.push(jobs.slice(i, i + take));
+    i += take;
+  }
+  pages.push(jobs.slice(i));
+  return pages;
+}
+
 function renderInvoicePrint(m, s) {
   state.cache.settings = s;
   const lines = m.lines.filter((l) => !l.cancelled_at);
@@ -457,17 +471,15 @@ function renderInvoicePrint(m, s) {
     ["Bill of Landing", "", "House/B Landing", ""], ["Vessel/Voyage", "", "AJU/PO", ""], ["POL/POD/ETD", "", "KGM/ M3", ""],
     ["Shipment Type", esc(trucks ? `Trucking ${trucks}` : "Trucking"), "Our Job No", esc(jobs.length === 1 ? jobs[0].job_number : "")],
   ];
-  // maksimal 20 job per lembar A4 (kop + tabel + rincian total tetap muat satu halaman); lebih dari itu lanjut ke lembar berikutnya,
-  // kop diulang, nomor urut berlanjut, rincian total & tanda tangan hanya di lembar terakhir
-  const PER_PAGE = 20;
-  const pages = [];
-  for (let i = 0; i < jobs.length || !pages.length; i += PER_PAGE) pages.push(jobs.slice(i, i + PER_PAGE));
+  // kop diulang di tiap lembar, nomor urut berlanjut, rincian total & tanda tangan hanya di lembar terakhir
+  const pages = invoicePages(jobs);
+  const startOf = (p) => pages.slice(0, p).reduce((a, x) => a + x.length, 0);
   const page = (part, p, last = p === pages.length - 1) => `
     <div class="inv-doc${last ? " inv-last" : ""}">
       <div class="inv-header"><div class="inv-top">
         <img class="inv-logo" src="img/logo-amico.png" alt="AMICO">
         <div class="inv-company"><div class="inv-co-name">${esc(s.company_name || "")}</div>
-          ${s.company_tagline !== "" ? `<div class="inv-co-tag">${esc(s.company_tagline ?? "Freight Forwarding & Logistics")}</div>` : ""}
+          ${s.company_tagline !== "" ? `<div class="inv-co-tag">${esc(s.company_tagline ?? "PT Amico Logistics Indonesia")}</div>` : ""}
           <div class="inv-co-addr">${esc(s.company_address || "")}</div></div>
       </div><div class="inv-title">INVOICE</div></div>
       <div class="inv-head">
@@ -481,7 +493,7 @@ function renderInvoicePrint(m, s) {
       <table class="inv-info">${info.map((r, i) => `<tr class="${i === 0 ? "shade" : ""}"><td>${r[0]}</td><td>: ${r[1]}</td><td>${r[2]}</td><td>: ${r[3]}</td></tr>`).join("")}</table>
       <table class="inv-lines">
         <thead><tr><th>No</th><th>Job Number</th><th>Tanggal Jalan</th><th>Kode Tugas</th><th>Origin</th><th>Route</th><th>Plate Number</th><th>Truck Type</th><th>Total Price</th></tr></thead>
-        <tbody>${part.map((l, i) => `<tr><td>${p * PER_PAGE + i + 1}</td><td>${esc(l.job_number)}</td><td>${dmy(jamDate(l.gate_out_at) || l.job_date)}</td><td>${esc(l.do_number || "")}</td>
+        <tbody>${part.map((l, i) => `<tr><td>${startOf(p) + i + 1}</td><td>${esc(l.job_number)}</td><td>${dmy(jamDate(l.gate_out_at) || l.job_date)}</td><td>${esc(l.do_number || "")}</td>
           <td>${esc(l.pol)}</td><td>${esc(l.pod)}</td><td>${esc(l.plate_number || "")}</td><td>${esc(l.truck_type || "")}</td>
           <td class="num">${rp(l.job_selling)}</td></tr>`).join("")}</tbody>
       </table>
