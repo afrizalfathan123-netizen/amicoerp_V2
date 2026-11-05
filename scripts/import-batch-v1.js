@@ -1,4 +1,5 @@
-// Kelompokkan invoice customer dan pengajuan DP vendor hasil impor JOB REG mengikuti batch ERP v1. Uang tidak berubah.
+// Kelompokkan invoice customer dan pengajuan vendor (DP, pelunasan, full) mengikuti batch ERP v1. Uang tidak berubah.
+// Batch v1 yang belum selesai dan belum ada di JOB REG dibuatkan dokumen tanpa pembayaran.
 // Jalankan SETELAH import:jobreg dan import:joblist-v1. Aman dijalankan ulang.
 //   npm run import:batch-v1 -- "C:\path\prod-xxxx.sql.gz"     -> database laptop (data/pg)
 //   ... --pratinjau      -> hanya menghitung, tidak menyimpan
